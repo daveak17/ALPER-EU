@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # 🧠 ALPER-EU
 
 Research project integrating **eye-tracking** and **body-tracking** technologies to capture and analyze human gaze and movement data.  
@@ -72,3 +73,11 @@ CSV columns used by the app:
 timestamp, x, y
 - timestamp — milliseconds since stream start
 - x, y — gaze coordinates within screen bounds (0–1920 × 0–1080)
+=======
+Tkinter desktop app that subscribes to TobiiStream (ZeroMq), records gaze data, and provides heatmaps and attention/presence analysis.
+
+
+1) Ensure TobiiStream on tcp://127.0.0.1:5556 is running
+2) `python GazeAppAlpha.py`
+3) Use the app to track, save CSV, and analyze
+>>>>>>> bad7ed5 (Initial upload: GazeAppAlpha.py and repo scaffolding)
