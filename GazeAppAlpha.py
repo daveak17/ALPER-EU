@@ -22,7 +22,7 @@ class GazeVisualization(tk.Canvas):
         self.screen_width = 1920
         self.screen_height = 1080  
         self.last_update = 0
-        self.update_interval = 1/30
+        self.update_interval = 1/90
         
     def update_position(self, x, y):
         current_time = time.time()
