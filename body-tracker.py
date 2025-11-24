@@ -12,9 +12,9 @@ import os
 baseline_shoulder_width = None
 
 
-# -----------------------------
+# ----------------------------
 # 1. Depth helper function
-# -----------------------------
+# ----------------------------
 def get_depth_distance(x_pixel, y_pixel, depth_frame):
     try:
         width = depth_frame.get_width()
