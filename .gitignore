@@ -7,16 +7,35 @@
 # Python cruft
 __pycache__/
 *.pyc
+# Data and exports
+*.csv
+temp_*.csv
+data/
+datasets/
+
+# Model weights and checkpoints
+*.pt
+*.pth
+*.onnx
+
+# Python cruft
+__pycache__/
+*.pyc
 *.pyo
 
 # Envs
 .venv/
 env/
 venv/
-.env/
+.env
+realsense_env/
 
-# VS Code settings
+# Editor
 .vscode/
 
 # Logs
 *.log
+
+# Outputs
+outputs/
+checkpoints/
