@@ -28,6 +28,44 @@ def get_depth_distance(x_pixel, y_pixel, depth_frame):
         return 0
 
 
+def smooth(prev, new, alpha=0.4):
+    """Simple exponential smoothing helper.
+
+    Works with scalars or numpy arrays. If `prev` is None, returns `new`.
+    """
+    if prev is None:
+        return new
+    return prev * (1 - alpha) + new * alpha
+
+
+# Hand smoothing storage (per-hand, per landmark)
+smooth_hands = {}
+
+# Upper body smoothing storage
+upper_body_ids = [0, 11, 12, 13, 14, 15, 16, 23, 24]  # nose + full upper body
+smooth_upper = {i: {"x": None, "y": None} for i in upper_body_ids}
+
+
+def smooth_hand_landmarks(hand_id, hand_landmarks, alpha=0.45):
+    """Smooths an entire hand's 21 landmarks.
+
+    Returns a list of (x,y) tuples for the smoothed landmarks.
+    """
+    if hand_id not in smooth_hands:
+        smooth_hands[hand_id] = [(lm.x, lm.y) for lm in hand_landmarks.landmark]
+        return smooth_hands[hand_id]
+
+    new_list = []
+    for i, lm in enumerate(hand_landmarks.landmark):
+        prev_x, prev_y = smooth_hands[hand_id][i]
+        new_x = smooth(prev_x, lm.x, alpha)
+        new_y = smooth(prev_y, lm.y, alpha)
+        new_list.append((new_x, new_y))
+
+    smooth_hands[hand_id] = new_list
+    return new_list
+
+
 # -----------------------------
 # 2. Logging system (CSV + Video)
 # -----------------------------
@@ -140,6 +178,12 @@ def start_thesis_tracking():
 
     logger = None
     is_recording = False
+    # smoothing state for key landmarks (shoulders + nose)
+    smooth_lm = {
+        "ls": {"x": None, "y": None, "d": None},
+        "rs": {"x": None, "y": None, "d": None},
+        "nose": {"x": None, "y": None, "d": None}
+    }
 
     try:
         while True:
@@ -170,19 +214,58 @@ def start_thesis_tracking():
             # ---------------------------------------------------------
             if pose_results.pose_landmarks:
                 lm = pose_results.pose_landmarks.landmark
+                visibility_threshold = 0.5
 
-                left_shoulder = lm[11]
-                right_shoulder = lm[12]
-                nose = lm[0]
+                # SKIP frame if shoulders are not visible enough
+                if lm[11].visibility < 0.5 or lm[12].visibility < 0.5:
+                    cv2.putText(image_bgr, "LOW CONFIDENCE", (50, 100),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+                    continue
 
-                ls_px = (int(left_shoulder.x * w), int(left_shoulder.y * h))
-                rs_px = (int(right_shoulder.x * w), int(right_shoulder.y * h))
+                # Extract raw landmarks
+                raw_ls = lm[11]
+                raw_rs = lm[12]
+                raw_nose = lm[0]
 
-                # Shoulder line (for visualization)
+                # --------------------- SMOOTH LANDMARKS ---------------------
+                smooth_lm["ls"]["x"] = smooth(smooth_lm["ls"]["x"], raw_ls.x)
+                smooth_lm["ls"]["y"] = smooth(smooth_lm["ls"]["y"], raw_ls.y)
+
+                smooth_lm["rs"]["x"] = smooth(smooth_lm["rs"]["x"], raw_rs.x)
+                smooth_lm["rs"]["y"] = smooth(smooth_lm["rs"]["y"], raw_rs.y)
+
+                smooth_lm["nose"]["x"] = smooth(smooth_lm["nose"]["x"], raw_nose.x)
+                smooth_lm["nose"]["y"] = smooth(smooth_lm["nose"]["y"], raw_nose.y)
+
+                # --------------------- DEPTH SMOOTHING ----------------------
+                ls_depth_raw = get_depth_distance(raw_ls.x, raw_ls.y, depth_frame)
+                rs_depth_raw = get_depth_distance(raw_rs.x, raw_rs.y, depth_frame)
+                nose_depth_raw = get_depth_distance(raw_nose.x, raw_nose.y, depth_frame)
+
+                smooth_lm["ls"]["d"] = smooth(smooth_lm["ls"]["d"], ls_depth_raw)
+                smooth_lm["rs"]["d"] = smooth(smooth_lm["rs"]["d"], rs_depth_raw)
+                smooth_lm["nose"]["d"] = smooth(smooth_lm["nose"]["d"], nose_depth_raw)
+
+                # --------------------- USE SMOOTHED VALUES ---------------------
+                ls_x = smooth_lm["ls"]["x"]
+                ls_y = smooth_lm["ls"]["y"]
+                rs_x = smooth_lm["rs"]["x"]
+                rs_y = smooth_lm["rs"]["y"]
+                nose_x = smooth_lm["nose"]["x"]
+                nose_y = smooth_lm["nose"]["y"]
+
+                depth_left = smooth_lm["ls"]["d"]
+                depth_right = smooth_lm["rs"]["d"]
+                nose_dist = smooth_lm["nose"]["d"]
+
+                # Pixel version for drawing
+                ls_px = (int(ls_x * w), int(ls_y * h))
+                rs_px = (int(rs_x * w), int(rs_y * h))
+
                 cv2.line(image_bgr, ls_px, rs_px, (255, 0, 0), 3)
 
-                # ---------- 1) Width ratio (screen-space) ----------
-                current_width = abs(left_shoulder.x - right_shoulder.x)
+                # ---------- 1) Width ratio ----------
+                current_width = abs(ls_x - rs_x)
 
                 if baseline_shoulder_width is None and current_width > 0:
                     baseline_shoulder_width = current_width
@@ -193,34 +276,26 @@ def start_thesis_tracking():
                     else 1.0
                 )
 
-                # ---------- 2) Depth difference (3D) ----------
-                depth_left = get_depth_distance(left_shoulder.x, left_shoulder.y, depth_frame)
-                depth_right = get_depth_distance(right_shoulder.x, right_shoulder.y, depth_frame)
-                depth_diff = abs(depth_left - depth_right) if depth_left > 0 and depth_right > 0 else 0.0
+                # ---------- 2) Depth difference ----------
+                depth_diff = abs(depth_left - depth_right) if depth_left and depth_right else 0.0
 
-                # ---------- 3) Height difference (projection) ----------
-                height_diff = abs(left_shoulder.y - right_shoulder.y)
+                # ---------- 3) Height difference ----------
+                height_diff = abs(ls_y - rs_y)
 
                 # ---------- Combined rotation score ----------
                 rotation_score = 0
 
-                # Width shrunk significantly (turned sideways)
                 if baseline_shoulder_width and width_ratio < 0.75:
                     rotation_score += 1
 
-                # One shoulder clearly closer (rotating chest)
-                if depth_diff > 0.10:  # meters, tweak if needed
+                if depth_diff > 0.10:
                     rotation_score += 1
 
-                # One shoulder visibly higher than the other
                 if height_diff > 0.03:
                     rotation_score += 1
 
                 # ---------- Decide focus status ----------
-                nose_dist = get_depth_distance(nose.x, nose.y, depth_frame)
-
                 if rotation_score >= 2:
-                    # Strong evidence of rotation
                     cv2.putText(
                         image_bgr,
                         "UNFOCUSED (BODY TURN)",
@@ -231,7 +306,6 @@ def start_thesis_tracking():
                         3,
                     )
                 else:
-                    # Use distance-based engagement
                     if 0 < nose_dist < 0.80:
                         cv2.putText(
                             image_bgr,
@@ -253,38 +327,33 @@ def start_thesis_tracking():
                             3,
                         )
 
-                # ---- Upper-body-only drawing ----
-                upper_points = [
-                    0, 1, 2, 3, 4,
-                    11, 12, 13, 14, 15, 16,
-                    23, 24
-                ]
+                # ---------- Smooth & draw upper-body points ----------
+                for i in upper_body_ids:
+                    raw = lm[i]
+                    prev = smooth_upper[i]
 
-                for i in upper_points:
-                    x = int(lm[i].x * w)
-                    y = int(lm[i].y * h)
+                    sx = smooth(prev["x"], raw.x, 0.4)
+                    sy = smooth(prev["y"], raw.y, 0.4)
+
+                    smooth_upper[i]["x"] = sx
+                    smooth_upper[i]["y"] = sy
+
+                    x = int(np.clip(sx * w, 0, w - 1))
+                    y = int(np.clip(sy * h, 0, h - 1))
                     cv2.circle(image_bgr, (x, y), 5, (0, 255, 255), -1)
-
-                connections = [
-                    (11, 12),
-                    (11, 13), (13, 15),
-                    (12, 14), (14, 16),
-                    (11, 23), (12, 24),
-                    (23, 24)
-                ]
-
-                for (a, b) in connections:
-                    ax, ay = int(lm[a].x * w), int(lm[a].y * h)
-                    bx, by = int(lm[b].x * w), int(lm[b].y * h)
-                    cv2.line(image_bgr, (ax, ay), (bx, by), (255, 255, 255), 2)
 
             # ---------------------------------------------------------
             # HANDS — EXACTLY HOW YOU WANT THEM
             # ---------------------------------------------------------
             if hands_results and hands_results.multi_hand_landmarks:
-                for hand_landmarks in hands_results.multi_hand_landmarks:
-                    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-                    wx, wy = int(wrist.x * w), int(wrist.y * h)
+                # Use handedness/ordering to assign a stable hand_id per hand
+                for hid, hand_landmarks in enumerate(hands_results.multi_hand_landmarks):
+                    # Smooth the whole hand and draw using smoothed coords
+                    smoothed = smooth_hand_landmarks(hid, hand_landmarks, alpha=0.45)
+
+                    # Wrist (landmark 0)
+                    wx_f, wy_f = smoothed[0]
+                    wx, wy = int(wx_f * w), int(wy_f * h)
                     cv2.circle(image_bgr, (wx, wy), 6, (0, 255, 255), -1)
 
                     fingertip_ids = [
@@ -292,12 +361,12 @@ def start_thesis_tracking():
                         mp_hands.HandLandmark.INDEX_FINGER_TIP,
                         mp_hands.HandLandmark.MIDDLE_FINGER_TIP,
                         mp_hands.HandLandmark.RING_FINGER_TIP,
-                        mp_hands.HandLandmark.PINKY_TIP
+                        mp_hands.HandLandmark.PINKY_TIP,
                     ]
 
                     for tip in fingertip_ids:
-                        pt = hand_landmarks.landmark[tip]
-                        tx, ty = int(pt.x * w), int(pt.y * h)
+                        sx, sy = smoothed[tip]
+                        tx, ty = int(sx * w), int(sy * h)
                         cv2.line(image_bgr, (wx, wy), (tx, ty), (0, 255, 255), 2)
                         cv2.circle(image_bgr, (tx, ty), 4, (0, 255, 255), -1)
 
