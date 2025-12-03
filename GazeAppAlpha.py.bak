@@ -15,30 +15,56 @@ import shutil # Moved to top
 
 # Note: Ensure Tobii drivers are installed and Tobiistream is running.
 
+# ===== Gaze signal processing helpers =====
+def smooth_gaze(prev_x, prev_y, new_x, new_y, alpha=0.4):
+    """Exponential smoothing for gaze coordinates.
+    If prev is None, returns new. Otherwise blends prev and new.
+    """
+    if prev_x is None or prev_y is None:
+        return new_x, new_y
+    smooth_x = prev_x * (1 - alpha) + new_x * alpha
+    smooth_y = prev_y * (1 - alpha) + new_y * alpha
+    return smooth_x, smooth_y
+
+def detect_missing_signal(current_ts, last_ts, expected_interval_ms=16.67):
+    """Detect if gaze signal is missing or delayed.
+    Returns (is_missing, gap_ms) where gap_ms is time since last valid signal.
+    expected_interval_ms = ~60Hz (16.67ms) or adjust for your Tobii sample rate.
+    """
+    if last_ts is None:
+        return False, 0
+    gap_ms = (current_ts - last_ts)
+    # If gap is > 2x expected interval, signal is likely missing
+    is_missing = gap_ms > (expected_interval_ms * 2)
+    return is_missing, gap_ms
+
 class GazeVisualization(tk.Canvas):
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
         self.configure(bg='black', width=320, height=180)
         self.dot = self.create_oval(0, 0, 10, 10, fill='red', outline='white')
         self.screen_width = 1920
-        self.screen_height = 1200
+        self.screen_height = 1080
         self.last_update = 0
-        # Default visualization update interval (90 FPS)
         self.update_interval = 1 / 90
 
-    def update_position(self, x, y):
+    def update_position(self, x, y, on_screen=True):
         current_time = time.time()
         # Simple throttle for visual smoothness
         if current_time - self.last_update < self.update_interval:
             return
 
-        # Calculate relative position on the canvas
-        canvas_x = int((x / self.screen_width) * self.winfo_width())
-        canvas_y = int((y / self.screen_height) * self.winfo_height())
+        if not on_screen:
+            # Move dot completely outside canvas (below bottom edge)
+            self.coords(self.dot, -20, -20, -10, -10)
+        else:
+            # Calculate relative position on the canvas
+            canvas_x = int((x / self.screen_width) * self.winfo_width())
+            canvas_y = int((y / self.screen_height) * self.winfo_height())
 
-        self.coords(self.dot,
-                    canvas_x - 5, canvas_y - 5,
-                    canvas_x + 5, canvas_y + 5)
+            self.coords(self.dot,
+                        canvas_x - 5, canvas_y - 5,
+                        canvas_x + 5, canvas_y + 5)
 
         self.last_update = current_time
 
@@ -74,10 +100,6 @@ class GazeAnalysisApp:
         # THREAD SAFETY: Queue to pass data from thread to GUI
         self.data_queue = queue.Queue()
 
-        # Adjustable software sampling rate (downsampling)
-        self.target_fps = 90           # default sampling FPS
-        self._last_save_time = 0.0     # last time we saved/processed a sample
-
         # Timer state
         self.timer_running = False
         self.timer_start_time = None
@@ -92,6 +114,14 @@ class GazeAnalysisApp:
         self.countdown_minutes_var = tk.IntVar(value=1)
         self.countdown_seconds_var = tk.IntVar(value=0)
         self.countdown_end_time = None
+        
+        # Gaze signal processing state
+        self.smooth_gaze_x = None
+        self.smooth_gaze_y = None
+        self.last_valid_timestamp = None
+        self.use_gaze_smoothing = tk.BooleanVar(value=True)
+        self.detect_missing_signals = tk.BooleanVar(value=True)
+        self.missing_signal_count = 0
 
         # Network
         self.context = zmq.Context()
@@ -146,22 +176,6 @@ class GazeAnalysisApp:
         self.stop_button = ModernButton(button_frame, text="⏹ Stop Tracking",
                                         command=self.stop_tracking, state='disabled')
         self.stop_button.pack(side='left', padx=10)
-
-        # ---------- Sampling Rate Dropdown (30–90 FPS) ----------
-        fps_frame = ttk.Frame(control_frame)
-        fps_frame.pack(padx=20, pady=(0, 10), anchor='w')
-
-        ttk.Label(fps_frame, text="Sampling Rate:").pack(side='left')
-        self.fps_combo = ttk.Combobox(
-            fps_frame,
-            values=['30', '45', '60', '75', '90'],
-            width=5,
-            state='readonly'
-        )
-        self.fps_combo.set(str(self.target_fps))
-        self.fps_combo.pack(side='left', padx=(8, 0))
-        self.fps_combo.bind('<<ComboboxSelected>>', self.on_fps_change)
-        # -------------------------------------------------------
 
         viz_frame = ttk.LabelFrame(self.tracking_frame, text="Live Gaze Visualization")
         viz_frame.pack(fill='x', padx=20, pady=10)
@@ -230,25 +244,19 @@ class GazeAnalysisApp:
         # Countdown remaining label
         self.countdown_label = ttk.Label(timer_content, text="Countdown: --:--:--", style='Status.TLabel')
         self.countdown_label.pack(side='left', padx=(20,0))
-
-    def on_fps_change(self, event=None):
-        """Handle changes to the sampling FPS from the dropdown."""
-        try:
-            fps = int(self.fps_combo.get())
-            self.target_fps = fps
-
-            # Also adjust visualization throttle to roughly match
-            try:
-                if hasattr(self, 'gaze_viz') and fps > 0:
-                    self.gaze_viz.update_interval = 1.0 / float(fps)
-            except Exception:
-                pass
-
-            if self.is_tracking:
-                self.status_label.config(text=f"✅ Tracking active - Sampling: {fps} FPS")
-        except Exception:
-            # If anything weird happens, just ignore and keep previous FPS
-            pass
+        
+        # Gaze signal processing options
+        signal_frame = ttk.LabelFrame(self.tracking_frame, text="Gaze Signal Processing")
+        signal_frame.pack(fill='x', padx=20, pady=10)
+        
+        signal_content = ttk.Frame(signal_frame)
+        signal_content.pack(padx=20, pady=10)
+        
+        ttk.Checkbutton(signal_content, text='Enable gaze smoothing (alpha=0.4)', variable=self.use_gaze_smoothing).pack(side='left', padx=5)
+        ttk.Checkbutton(signal_content, text='Detect missing signals', variable=self.detect_missing_signals).pack(side='left', padx=5)
+        
+        self.missing_signal_label = ttk.Label(signal_content, text="Signal gaps: 0", style='Status.TLabel')
+        self.missing_signal_label.pack(side='left', padx=20)
 
     def setup_analysis_tab(self):
         file_frame = ttk.LabelFrame(self.analysis_frame, text="Data Source")
@@ -306,13 +314,11 @@ class GazeAnalysisApp:
                 self.temp_file = f"temp_gaze_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 self.csv_file = open(self.temp_file, 'w', newline='')
                 self.writer = csv.writer(self.csv_file)
-                self.writer.writerow(['timestamp', 'x', 'y', 'on_screen'])
+                # Updated CSV header: timestamp (ms), smoothed_x, smoothed_y, on_screen
+                self.writer.writerow(['timestamp_ms', 'smoothed_x', 'smoothed_y', 'on_screen'])
 
                 self.is_tracking = True
                 self.sample_count = 0
-                # reset downsample timer so first sample is saved immediately
-                self._last_save_time = 0.0
-
                 self.tracking_thread = threading.Thread(target=self.tracking_loop)
                 self.tracking_thread.daemon = True
                 self.tracking_thread.start()
@@ -338,10 +344,23 @@ class GazeAnalysisApp:
             self.is_tracking = False
             if self.tracking_thread:
                 self.tracking_thread.join(timeout=1.0)
+            
+            # CRITICAL: Flush and close file BEFORE stopping socket
+            if hasattr(self, 'csv_file') and self.csv_file:
+                try:
+                    self.csv_file.flush()
+                    self.csv_file.close()
+                except:
+                    pass
+            
             if self.socket:
                 self.socket.close()
-            if hasattr(self, 'csv_file'):
-                self.csv_file.close()
+            
+            # Reset gaze smoothing state
+            self.smooth_gaze_x = None
+            self.smooth_gaze_y = None
+            self.last_valid_timestamp = None
+            self.missing_signal_count = 0
 
             try:
                 if self.auto_start_timer.get():
@@ -349,6 +368,14 @@ class GazeAnalysisApp:
             except Exception:
                 pass
 
+            # Show missing signal summary before save dialog
+            if self.detect_missing_signals.get() and self.missing_signal_count > 0:
+                messagebox.showinfo(
+                    "Signal Quality",
+                    f"Detected {self.missing_signal_count} signal gaps during tracking.\n"
+                    f"This may indicate Tobii stream interruptions."
+                )
+            
             default_name = f"gazetrack_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             save_path = filedialog.asksaveasfilename(
                 defaultextension=".csv",
@@ -393,9 +420,6 @@ class GazeAnalysisApp:
                         raw_x = float(parts[2])
                         raw_y = float(parts[3])
 
-                        x = max(0, min(raw_x, 1920))
-                        y = max(0, min(raw_y, 1200))
-
                         if len(parts) >= 5:
                             try:
                                 validity = int(parts[4])
@@ -404,39 +428,66 @@ class GazeAnalysisApp:
                         else:
                             validity = 0 
 
+                            # STEP 2: ON-SCREEN DETECTION (no clamping)
                         is_valid = (validity == 0)
-                        within_bounds = (0 <= raw_x <= 1920) and (0 <= raw_y <= 1200)
+                        within_bounds = (0 <= raw_x <= 1920) and (0 <= raw_y <= 1080)
                         on_screen = bool(is_valid and within_bounds)
+                        
+                        # ===== MISSING SIGNAL DETECTION =====
+                        signal_gap_ms = 0
+                        is_missing_signal = False
+                        if self.detect_missing_signals.get():
+                            is_missing_signal, signal_gap_ms = detect_missing_signal(
+                                timestamp, self.last_valid_timestamp, expected_interval_ms=16.67
+                            )
+                            if is_missing_signal:
+                                self.missing_signal_count += 1
+                        
+                        self.last_valid_timestamp = timestamp
+                        
+                            # STEP 3: GAZE SMOOTHING (ON-SCREEN ONLY)
+                        if self.use_gaze_smoothing.get() and on_screen:
+                            smooth_x, smooth_y = smooth_gaze(
+                                self.smooth_gaze_x, self.smooth_gaze_y,
+                                raw_x, raw_y, alpha=0.4
+                            )
+                            self.smooth_gaze_x = smooth_x
+                            self.smooth_gaze_y = smooth_y
+                        else:
+                                # OFF-SCREEN or INVALID: store EXACT raw values
+                                smooth_x = raw_x
+                                smooth_y = raw_y
+                            self.smooth_gaze_x = None
+                            self.smooth_gaze_y = None
+                        
+                        # ===== UNIFORM MILLISECOND TIMESTAMPS =====
+                            # Ensure timestamp is in milliseconds
+                        timestamp_ms = timestamp if timestamp > 1e10 else timestamp * 1000
 
-                        # ---------- Software downsampling ----------
-                        try:
-                            current_time = time.time()
-                            sample_interval = 1.0 / float(getattr(self, 'target_fps', 90))
-                        except Exception:
-                            current_time = time.time()
-                            sample_interval = 1.0 / 90.0
-
-                        if current_time - getattr(self, '_last_save_time', 0.0) >= sample_interval:
-                            # Save to CSV
+                            # STEP 4: ALWAYS WRITE RAW VALUES TO CSV
+                        if self.is_tracking and hasattr(self, 'writer'):
                             try:
-                                self.writer.writerow([timestamp, raw_x, raw_y, on_screen])
-                            except Exception:
-                                pass
+                                self.writer.writerow([timestamp_ms, smooth_x, smooth_y, on_screen])
+                                self.sample_count += 1
+                            except ValueError:
+                                # File closed, stop processing
+                                break
 
-                            self.sample_count += 1
-                            self._last_save_time = current_time
-
-                            # Send data to GUI Thread (also at downsampled rate)
+                            # STEP 5: Send data to GUI Thread
                             data_packet = {
-                                'x': x,
-                                'y': y,
+                                'x': int(smooth_x) if smooth_x >= 0 else int(smooth_x),
+                                'y': int(smooth_y) if smooth_y >= 0 else int(smooth_y),
                                 'raw_x': raw_x,
                                 'raw_y': raw_y,
+                                'smooth_x': smooth_x,
+                                'smooth_y': smooth_y,
                                 'on_screen': on_screen,
-                                'count': self.sample_count
+                                'count': self.sample_count,
+                                'is_missing_signal': is_missing_signal,
+                                'signal_gap_ms': signal_gap_ms,
+                                'timestamp_ms': timestamp_ms
                             }
                             self.data_queue.put(data_packet)
-                        # ------------------------------------------
                 except zmq.ZMQError:
                     continue
             else:
@@ -450,22 +501,30 @@ class GazeAnalysisApp:
                 # Get data without blocking
                 data = self.data_queue.get_nowait()
                 
-                # Visual update
-                self.gaze_viz.update_position(data['x'], data['y'])
+                # Visual update: pass on_screen flag to position update
+                self.gaze_viz.update_position(data['x'], data['y'], on_screen=data['on_screen'])
                 
                 # Text updates (Throttle to every 10th sample to reduce CPU load)
                 if data['count'] % 10 == 0:
-                    self.coordinates_label.config(
-                        text=f"👀 Position: x={data['raw_x']:.2f}, y={data['raw_y']:.2f}"
-                    )
-                    self.status_label.config(
-                        text=f"✅ Active - Samples: {data['count']}"
-                    )
+                    coord_text = f"👀 Raw: x={data['raw_x']:.1f}, y={data['raw_y']:.1f}"
+                    if self.use_gaze_smoothing.get():
+                        coord_text += f" | Smooth: x={data['smooth_x']:.1f}, y={data['smooth_y']:.1f}"
+                    self.coordinates_label.config(text=coord_text)
+                    
+                    status_text = f"✅ Active - Samples: {data['count']}"
+                    if data['is_missing_signal']:
+                        status_text += f" | GAP: {data['signal_gap_ms']:.1f}ms"
+                    self.status_label.config(text=status_text)
                     
                     if data['on_screen']:
                         self.screen_status_label.config(text="STATUS: ON-SCREEN", foreground="green")
                     else:
                         self.screen_status_label.config(text="STATUS: OFF-SCREEN", foreground="red")
+                    
+                    # Update missing signal counter
+                    self.missing_signal_label.config(
+                        text=f"Signal gaps: {self.missing_signal_count}"
+                    )
                         
         except queue.Empty:
             pass
@@ -600,6 +659,14 @@ class GazeAnalysisApp:
             try:
                 self.data = pd.read_csv(filename)
 
+                # Map new column names to legacy names for analysis compatibility
+                if 'smoothed_x' in self.data.columns:
+                    self.data['x'] = self.data['smoothed_x']
+                if 'smoothed_y' in self.data.columns:
+                    self.data['y'] = self.data['smoothed_y']
+                if 'timestamp_ms' in self.data.columns:
+                    self.data['timestamp'] = self.data['timestamp_ms']
+
                 if 'on_screen' in self.data.columns:
                     self.data['on_screen'] = self.data['on_screen'].astype(str).str.lower() == 'true'
                 else:
@@ -607,7 +674,7 @@ class GazeAnalysisApp:
                         (self.data['x'] >= 0) &
                         (self.data['y'] >= 0) &
                         (self.data['x'] <= 1920) &
-                        (self.data['y'] <= 1200)
+                        (self.data['y'] <= 1080)
                     )
 
                 self.file_label.config(text=f"📊 Loaded: {os.path.basename(filename)}")
@@ -630,13 +697,13 @@ class GazeAnalysisApp:
         plt.style.use('seaborn-v0_8')
 
         x_data = np.clip(self.data['x'], 0, 1920)
-        y_data = np.clip(self.data['y'], 0, 1200)
+        y_data = np.clip(self.data['y'], 0, 1080)
 
         heatmap = ax.hist2d(
             x_data, y_data,
             bins=50,
             cmap='hot',
-            range=[[0, 1920], [0, 1200]]
+            range=[[0, 1920], [0, 1080]]
         )
 
         plt.colorbar(heatmap[3], ax=ax, label='Gaze Density')
@@ -645,7 +712,7 @@ class GazeAnalysisApp:
         ax.set_ylabel("Screen Y Coordinate")
 
         ax.set_xlim(0, 1920)
-        ax.set_ylim(1200, 0) 
+        ax.set_ylim(1080, 0) 
 
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -668,7 +735,7 @@ class GazeAnalysisApp:
         plt.style.use('seaborn-v0_8-whitegrid')
 
         x_data = np.clip(self.data['x'], 0, 1920)
-        y_data = np.clip(self.data['y'], 0, 1200)
+        y_data = np.clip(self.data['y'], 0, 1080)
 
         ax.scatter(
             x_data, y_data,
@@ -679,7 +746,7 @@ class GazeAnalysisApp:
         )
 
         ax.set_xlim(0, 1920)
-        ax.set_ylim(1200, 0) 
+        ax.set_ylim(1080, 0) 
 
         ax.set_xlabel("Screen X Coordinate")
         ax.set_ylabel("Screen Y Coordinate")
@@ -823,7 +890,7 @@ class GazeAnalysisApp:
         📊 Presence Percentage: {presence_percentage:.1f}%
         
         Analysis Parameters:
-        • Screen bounds: 1920x1200
+        • Screen bounds: 1920x1080
         • Total samples analyzed: {len(self.data)}
         """
 
