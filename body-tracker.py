@@ -11,6 +11,9 @@ import os
 # ================================================
 baseline_shoulder_width = None
 
+# Adjustable thresholds (will be controlled by OpenCV trackbars)
+distance_threshold = 0.80      # meters (default)
+turned_threshold = 2           # rotation_score threshold (0–3)
 
 # ----------------------------
 # 1. Depth helper function
@@ -93,7 +96,8 @@ class SessionLogger:
                 "Timestamp_ms",
                 "Nose_X", "Nose_Y", "Nose_Dist_M",
                 "L_Shoulder_X", "L_Shoulder_Y", "L_Shoulder_Dist_M",
-                "R_Shoulder_X", "R_Shoulder_Y", "R_Shoulder_Dist_M"
+                "R_Shoulder_X", "R_Shoulder_Y", "R_Shoulder_Dist_M",
+                "Distance_OK", "Facing_Forward"
             ])
 
         # Hands CSV
@@ -105,7 +109,8 @@ class SessionLogger:
                 "Hand_Count"
             ])
 
-    def log_frame(self, frame, timestamp_ms, pose_landmarks, hand_landmarks, depth_frame):
+    def log_frame(self, frame, timestamp_ms, pose_landmarks, hand_landmarks, depth_frame,
+                  distance_ok=None, facing_forward=None):
         # Save video frame
         self.out.write(frame)
 
@@ -119,7 +124,9 @@ class SessionLogger:
                 dist = get_depth_distance(x, y, depth_frame)
                 return [x, y, dist]
 
-            row = [timestamp_ms] + get_data(0) + get_data(11) + get_data(12)
+            row = [timestamp_ms] + get_data(0) + get_data(11) + get_data(12) + [
+                distance_ok, facing_forward
+            ]
 
             with open(self.csv_upper_path, "a", newline="") as f:
                 csv.writer(f).writerow(row)
@@ -144,7 +151,7 @@ class SessionLogger:
 # 3. Main tracking function
 # -----------------------------
 def start_thesis_tracking():
-    global baseline_shoulder_width
+    global baseline_shoulder_width, distance_threshold, turned_threshold
 
     mp_pose = mp.solutions.pose
     mp_hands = mp.solutions.hands
@@ -172,18 +179,33 @@ def start_thesis_tracking():
     config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
     config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
-    print("[INFO] System Ready — Press 'r' to Record, 'q' to Quit.")
+    print("[INFO] System Ready — Press 'r' to Record, 'esc' to Quit.")
     profile = pipeline.start(config)
     align = rs.align(rs.stream.color)
 
     logger = None
     is_recording = False
+
     # smoothing state for key landmarks (shoulders + nose)
     smooth_lm = {
         "ls": {"x": None, "y": None, "d": None},
         "rs": {"x": None, "y": None, "d": None},
         "nose": {"x": None, "y": None, "d": None}
     }
+
+    # -----------------------
+    # OpenCV "GUI" Trackbars
+    # -----------------------
+    window_name = "Thesis Tracker: Clean Upper Body + Hands"
+    cv2.namedWindow(window_name)
+
+    def nothing(x):
+        pass
+
+    # Distance slider in cm: 40cm–150cm
+    cv2.createTrackbar("Distance (cm)", window_name, 80, 150, nothing)  # default 80cm
+    # Turn score threshold: 1–3
+    cv2.createTrackbar("Turn Score Thr", window_name, 2, 3, nothing)   # default 2
 
     try:
         while True:
@@ -194,6 +216,19 @@ def start_thesis_tracking():
             depth_frame = aligned.get_depth_frame()
             if not color_frame or not depth_frame:
                 continue
+
+            # -----------------------------
+            # Read current thresholds from sliders
+            # -----------------------------
+            dist_cm = cv2.getTrackbarPos("Distance (cm)", window_name)
+            if dist_cm < 40:
+                dist_cm = 40
+            distance_threshold = dist_cm / 100.0  # convert to meters
+
+            turn_thr = cv2.getTrackbarPos("Turn Score Thr", window_name)
+            if turn_thr < 1:
+                turn_thr = 1
+            turned_threshold = turn_thr  # integer 1–3
 
             color_image = np.asanyarray(color_frame.get_data())
             timestamp_ms = frames.get_timestamp()
@@ -209,6 +244,10 @@ def start_thesis_tracking():
 
             h, w, _ = image_bgr.shape
 
+            # Defaults (in case no pose is detected this frame)
+            distance_ok = None
+            facing_forward = None
+
             # ---------------------------------------------------------
             # POSE (UPPER BODY + ENGAGED + BODY TURN UNFOCUSED)
             # ---------------------------------------------------------
@@ -217,96 +256,90 @@ def start_thesis_tracking():
                 visibility_threshold = 0.5
 
                 # SKIP frame if shoulders are not visible enough
-                if lm[11].visibility < 0.5 or lm[12].visibility < 0.5:
+                if lm[11].visibility < visibility_threshold or lm[12].visibility < visibility_threshold:
                     cv2.putText(image_bgr, "LOW CONFIDENCE", (50, 100),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-                    continue
-
-                # Extract raw landmarks
-                raw_ls = lm[11]
-                raw_rs = lm[12]
-                raw_nose = lm[0]
-
-                # --------------------- SMOOTH LANDMARKS ---------------------
-                smooth_lm["ls"]["x"] = smooth(smooth_lm["ls"]["x"], raw_ls.x)
-                smooth_lm["ls"]["y"] = smooth(smooth_lm["ls"]["y"], raw_ls.y)
-
-                smooth_lm["rs"]["x"] = smooth(smooth_lm["rs"]["x"], raw_rs.x)
-                smooth_lm["rs"]["y"] = smooth(smooth_lm["rs"]["y"], raw_rs.y)
-
-                smooth_lm["nose"]["x"] = smooth(smooth_lm["nose"]["x"], raw_nose.x)
-                smooth_lm["nose"]["y"] = smooth(smooth_lm["nose"]["y"], raw_nose.y)
-
-                # --------------------- DEPTH SMOOTHING ----------------------
-                ls_depth_raw = get_depth_distance(raw_ls.x, raw_ls.y, depth_frame)
-                rs_depth_raw = get_depth_distance(raw_rs.x, raw_rs.y, depth_frame)
-                nose_depth_raw = get_depth_distance(raw_nose.x, raw_nose.y, depth_frame)
-
-                smooth_lm["ls"]["d"] = smooth(smooth_lm["ls"]["d"], ls_depth_raw)
-                smooth_lm["rs"]["d"] = smooth(smooth_lm["rs"]["d"], rs_depth_raw)
-                smooth_lm["nose"]["d"] = smooth(smooth_lm["nose"]["d"], nose_depth_raw)
-
-                # --------------------- USE SMOOTHED VALUES ---------------------
-                ls_x = smooth_lm["ls"]["x"]
-                ls_y = smooth_lm["ls"]["y"]
-                rs_x = smooth_lm["rs"]["x"]
-                rs_y = smooth_lm["rs"]["y"]
-                nose_x = smooth_lm["nose"]["x"]
-                nose_y = smooth_lm["nose"]["y"]
-
-                depth_left = smooth_lm["ls"]["d"]
-                depth_right = smooth_lm["rs"]["d"]
-                nose_dist = smooth_lm["nose"]["d"]
-
-                # Pixel version for drawing
-                ls_px = (int(ls_x * w), int(ls_y * h))
-                rs_px = (int(rs_x * w), int(rs_y * h))
-
-                cv2.line(image_bgr, ls_px, rs_px, (255, 0, 0), 3)
-
-                # ---------- 1) Width ratio ----------
-                current_width = abs(ls_x - rs_x)
-
-                if baseline_shoulder_width is None and current_width > 0:
-                    baseline_shoulder_width = current_width
-
-                width_ratio = (
-                    current_width / baseline_shoulder_width
-                    if baseline_shoulder_width
-                    else 1.0
-                )
-
-                # ---------- 2) Depth difference ----------
-                depth_diff = abs(depth_left - depth_right) if depth_left and depth_right else 0.0
-
-                # ---------- 3) Height difference ----------
-                height_diff = abs(ls_y - rs_y)
-
-                # ---------- Combined rotation score ----------
-                rotation_score = 0
-
-                if baseline_shoulder_width and width_ratio < 0.75:
-                    rotation_score += 1
-
-                if depth_diff > 0.10:
-                    rotation_score += 1
-
-                if height_diff > 0.03:
-                    rotation_score += 1
-
-                # ---------- Decide focus status ----------
-                if rotation_score >= 2:
-                    cv2.putText(
-                        image_bgr,
-                        "UNFOCUSED (BODY TURN)",
-                        (50, 150),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1.0,
-                        (0, 0, 255),
-                        3,
-                    )
+                    # even if we skip drawing, we still show last statuses / thresholds
                 else:
-                    if 0 < nose_dist < 0.80:
+                    # Extract raw landmarks
+                    raw_ls = lm[11]
+                    raw_rs = lm[12]
+                    raw_nose = lm[0]
+
+                    # --------------------- SMOOTH LANDMARKS ---------------------
+                    smooth_lm["ls"]["x"] = smooth(smooth_lm["ls"]["x"], raw_ls.x)
+                    smooth_lm["ls"]["y"] = smooth(smooth_lm["ls"]["y"], raw_ls.y)
+
+                    smooth_lm["rs"]["x"] = smooth(smooth_lm["rs"]["x"], raw_rs.x)
+                    smooth_lm["rs"]["y"] = smooth(smooth_lm["rs"]["y"], raw_rs.y)
+
+                    smooth_lm["nose"]["x"] = smooth(smooth_lm["nose"]["x"], raw_nose.x)
+                    smooth_lm["nose"]["y"] = smooth(smooth_lm["nose"]["y"], raw_nose.y)
+
+                    # --------------------- DEPTH SMOOTHING ----------------------
+                    ls_depth_raw = get_depth_distance(raw_ls.x, raw_ls.y, depth_frame)
+                    rs_depth_raw = get_depth_distance(raw_rs.x, raw_rs.y, depth_frame)
+                    nose_depth_raw = get_depth_distance(raw_nose.x, raw_nose.y, depth_frame)
+
+                    smooth_lm["ls"]["d"] = smooth(smooth_lm["ls"]["d"], ls_depth_raw)
+                    smooth_lm["rs"]["d"] = smooth(smooth_lm["rs"]["d"], rs_depth_raw)
+                    smooth_lm["nose"]["d"] = smooth(smooth_lm["nose"]["d"], nose_depth_raw)
+
+                    # --------------------- USE SMOOTHED VALUES ---------------------
+                    ls_x = smooth_lm["ls"]["x"]
+                    ls_y = smooth_lm["ls"]["y"]
+                    rs_x = smooth_lm["rs"]["x"]
+                    rs_y = smooth_lm["rs"]["y"]
+                    nose_x = smooth_lm["nose"]["x"]
+                    nose_y = smooth_lm["nose"]["y"]
+
+                    depth_left = smooth_lm["ls"]["d"]
+                    depth_right = smooth_lm["rs"]["d"]
+                    nose_dist = smooth_lm["nose"]["d"]
+
+                    # Pixel version for drawing
+                    ls_px = (int(ls_x * w), int(ls_y * h))
+                    rs_px = (int(rs_x * w), int(rs_y * h))
+
+                    cv2.line(image_bgr, ls_px, rs_px, (255, 0, 0), 3)
+
+                    # ---------- 1) Width ratio ----------
+                    current_width = abs(ls_x - rs_x)
+
+                    if baseline_shoulder_width is None and current_width > 0:
+                        baseline_shoulder_width = current_width
+
+                    width_ratio = (
+                        current_width / baseline_shoulder_width
+                        if baseline_shoulder_width
+                        else 1.0
+                    )
+
+                    # ---------- 2) Depth difference ----------
+                    depth_diff = abs(depth_left - depth_right) if depth_left and depth_right else 0.0
+
+                    # ---------- 3) Height difference ----------
+                    height_diff = abs(ls_y - rs_y)
+
+                    # ---------- Combined rotation score ----------
+                    rotation_score = 0
+
+                    if baseline_shoulder_width and width_ratio < 0.75:
+                        rotation_score += 1
+
+                    if depth_diff > 0.10:
+                        rotation_score += 1
+
+                    if height_diff > 0.03:
+                        rotation_score += 1
+
+                    # ---------- Boolean decisions using adjustable thresholds ----------
+                    distance_ok = (nose_dist is not None) and (0 < nose_dist <= distance_threshold)
+                    facing_forward = rotation_score < turned_threshold
+
+                    # ---------- Decide focus status ----------
+                    # ENGAGED only if both True
+                    if distance_ok and facing_forward:
                         cv2.putText(
                             image_bgr,
                             "ENGAGED",
@@ -317,44 +350,72 @@ def start_thesis_tracking():
                             2,
                         )
                     else:
-                        cv2.putText(
-                            image_bgr,
-                            "UNFOCUSED (DISTANCE)",
-                            (50, 150),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1.0,
-                            (0, 0, 255),
-                            3,
-                        )
+                        # Decide reason
+                        if not distance_ok:
+                            cv2.putText(
+                                image_bgr,
+                                "UNFOCUSED (DISTANCE)",
+                                (50, 150),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1.0,
+                                (0, 0, 255),
+                                3,
+                            )
+                        elif not facing_forward:
+                            cv2.putText(
+                                image_bgr,
+                                "UNFOCUSED (BODY TURN)",
+                                (50, 150),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                1.0,
+                                (0, 0, 255),
+                                3,
+                            )
 
-                # ---------- Smooth & draw upper-body points ----------
-                for i in upper_body_ids:
-                    raw = lm[i]
-                    prev = smooth_upper[i]
+                    # ---------- Smooth & draw upper-body points ----------
+                    for i in upper_body_ids:
+                        raw = lm[i]
+                        prev = smooth_upper[i]
 
-                    sx = smooth(prev["x"], raw.x, 0.4)
-                    sy = smooth(prev["y"], raw.y, 0.4)
+                        sx = smooth(prev["x"], raw.x, 0.4)
+                        sy = smooth(prev["y"], raw.y, 0.4)
 
-                    smooth_upper[i]["x"] = sx
-                    smooth_upper[i]["y"] = sy
+                        smooth_upper[i]["x"] = sx
+                        smooth_upper[i]["y"] = sy
 
-                    x = int(np.clip(sx * w, 0, w - 1))
-                    y = int(np.clip(sy * h, 0, h - 1))
-                    cv2.circle(image_bgr, (x, y), 5, (0, 255, 255), -1)
+                        x = int(np.clip(sx * w, 0, w - 1))
+                        y = int(np.clip(sy * h, 0, h - 1))
+                        cv2.circle(image_bgr, (x, y), 5, (0, 255, 255), -1)
 
             # ---------------------------------------------------------
             # HANDS — EXACTLY HOW YOU WANT THEM
             # ---------------------------------------------------------
             if hands_results and hands_results.multi_hand_landmarks:
-                # Use handedness/ordering to assign a stable hand_id per hand
-                for hid, hand_landmarks in enumerate(hands_results.multi_hand_landmarks):
+                # Prefer handedness labels (Left/Right) as stable hand IDs.
+                # Zip landmarks with handedness to keep association stable frame-to-frame.
+                for hand_landmarks, hand_handedness in zip(
+                    hands_results.multi_hand_landmarks, hands_results.multi_handedness
+                ):
+                    # classification[0].label is 'Left' or 'Right'
+                    label = hand_handedness.classification[0].label
+                    score = hand_handedness.classification[0].score
+
+                    # Skip very low-confidence handedness results
+                    if score < 0.35:
+                        continue
+
+                    hand_id = label  # use 'Left'/'Right' as persistent key
+
                     # Smooth the whole hand and draw using smoothed coords
-                    smoothed = smooth_hand_landmarks(hid, hand_landmarks, alpha=0.45)
+                    smoothed = smooth_hand_landmarks(hand_id, hand_landmarks, alpha=0.45)
 
                     # Wrist (landmark 0)
                     wx_f, wy_f = smoothed[0]
-                    wx, wy = int(wx_f * w), int(wy_f * h)
+                    if wx_f is None or wy_f is None:
+                        continue
+                    wx, wy = int(np.clip(wx_f * w, 0, w - 1)), int(np.clip(wy_f * h, 0, h - 1))
                     cv2.circle(image_bgr, (wx, wy), 6, (0, 255, 255), -1)
+                    cv2.putText(image_bgr, label[0], (wx + 6, wy + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 0), 2)
 
                     fingertip_ids = [
                         mp_hands.HandLandmark.THUMB_TIP,
@@ -366,9 +427,49 @@ def start_thesis_tracking():
 
                     for tip in fingertip_ids:
                         sx, sy = smoothed[tip]
-                        tx, ty = int(sx * w), int(sy * h)
+                        if sx is None or sy is None:
+                            continue
+                        tx, ty = int(np.clip(sx * w, 0, w - 1)), int(np.clip(sy * h, 0, h - 1))
                         cv2.line(image_bgr, (wx, wy), (tx, ty), (0, 255, 255), 2)
                         cv2.circle(image_bgr, (tx, ty), 4, (0, 255, 255), -1)
+
+            # ---------------------------------------------------------
+            # OVERLAY LIVE TRUE/FALSE STATUS
+            # ---------------------------------------------------------
+            # Show current thresholds and booleans at top-left for debugging
+            cv2.putText(
+                image_bgr,
+                f"Dist_Thr: {distance_threshold:.2f}m | Turn_Thr: {int(turned_threshold)}",
+                (20, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
+
+            if distance_ok is not None:
+                color_d = (0, 255, 0) if distance_ok else (0, 0, 255)
+                cv2.putText(
+                    image_bgr,
+                    f"Distance_OK: {distance_ok}",
+                    (20, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color_d,
+                    2,
+                )
+
+            if facing_forward is not None:
+                color_f = (0, 255, 0) if facing_forward else (0, 0, 255)
+                cv2.putText(
+                    image_bgr,
+                    f"Facing_Forward: {facing_forward}",
+                    (20, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    color_f,
+                    2,
+                )
 
             # ---------------------------------------------------------
             # RECORDING
@@ -383,13 +484,15 @@ def start_thesis_tracking():
                     timestamp_ms,
                     pose_results.pose_landmarks if pose_results else None,
                     hands_results.multi_hand_landmarks if (hands_results and hands_results.multi_hand_landmarks) else None,
-                    depth_frame
+                    depth_frame,
+                    distance_ok=distance_ok,
+                    facing_forward=facing_forward,
                 )
 
-            cv2.imshow("Thesis Tracker: Clean Upper Body + Hands", image_bgr)
+            cv2.imshow(window_name, image_bgr)
 
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            if key == 27:
                 break
             elif key == ord("r"):
                 if not is_recording:
