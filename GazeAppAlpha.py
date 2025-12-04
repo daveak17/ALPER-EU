@@ -93,6 +93,12 @@ class GazeAnalysisApp:
         self.countdown_seconds_var = tk.IntVar(value=0)
         self.countdown_end_time = None
 
+        # Gaze Duration Tracking State
+        self.total_on_screen_time = 0  # milliseconds
+        self.total_off_screen_time = 0  # milliseconds
+        self.last_timestamp = None  # milliseconds
+        self.last_gaze_state = None  # True (on-screen), False (off-screen), or None
+
         # Network
         self.context = zmq.Context()
         self.socket = None
@@ -195,6 +201,38 @@ class GazeAnalysisApp:
             foreground="gray"
         )
         self.screen_status_label.pack(pady=(10, 0))
+
+        # Gaze Duration Tracking UI
+        gaze_duration_frame = ttk.LabelFrame(self.tracking_frame, text="Gaze Duration Analysis")
+        gaze_duration_frame.pack(fill='x', padx=20, pady=10)
+
+        duration_content = ttk.Frame(gaze_duration_frame)
+        duration_content.pack(padx=20, pady=15)
+
+        # On-screen time label
+        self.gaze_on_screen_label = ttk.Label(
+            duration_content,
+            text="On-screen time: 00:00.0",
+            font=("Helvetica", 11)
+        )
+        self.gaze_on_screen_label.pack(pady=5)
+
+        # Off-screen time label
+        self.gaze_off_screen_label = ttk.Label(
+            duration_content,
+            text="Off-screen time: 00:00.0",
+            font=("Helvetica", 11)
+        )
+        self.gaze_off_screen_label.pack(pady=5)
+
+        # Percentage label
+        self.gaze_percentage_label = ttk.Label(
+            duration_content,
+            text="On-screen 0.0% | Off-screen 0.0%",
+            font=("Helvetica", 11, "bold"),
+            foreground="#007bff"
+        )
+        self.gaze_percentage_label.pack(pady=5)
 
         # Timer controls
         timer_frame = ttk.LabelFrame(self.tracking_frame, text="Timer")
@@ -313,6 +351,9 @@ class GazeAnalysisApp:
                 # reset downsample timer so first sample is saved immediately
                 self._last_save_time = 0.0
 
+                # Reset gaze duration timers for new session
+                self.reset_gaze_timers()
+
                 self.tracking_thread = threading.Thread(target=self.tracking_loop)
                 self.tracking_thread.daemon = True
                 self.tracking_thread.start()
@@ -361,7 +402,15 @@ class GazeAnalysisApp:
                 try:
                     shutil.copy2(self.temp_file, save_path)
                     os.remove(self.temp_file)
-                    messagebox.showinfo("Success", f"Data saved to {save_path}")
+                    
+                    # Export session summary after successful CSV save
+                    summary_path = self._export_session_summary(save_path, self.sample_count)
+                    
+                    if summary_path:
+                        messagebox.showinfo("Success", 
+                            f"Data saved to {save_path}\n\nSession summary: {os.path.basename(summary_path)}")
+                    else:
+                        messagebox.showinfo("Success", f"Data saved to {save_path}")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to save file: {str(e)}")
             else:
@@ -433,6 +482,7 @@ class GazeAnalysisApp:
                                 'raw_x': raw_x,
                                 'raw_y': raw_y,
                                 'on_screen': on_screen,
+                                'timestamp_ms': int(timestamp),  # Tobii timestamp is already in milliseconds
                                 'count': self.sample_count
                             }
                             self.data_queue.put(data_packet)
@@ -450,6 +500,9 @@ class GazeAnalysisApp:
                 # Get data without blocking
                 data = self.data_queue.get_nowait()
                 
+                # Update gaze duration tracking with every sample
+                self.update_gaze_durations(data['timestamp_ms'], data['on_screen'])
+                
                 # Visual update
                 self.gaze_viz.update_position(data['x'], data['y'])
                 
@@ -466,6 +519,9 @@ class GazeAnalysisApp:
                         self.screen_status_label.config(text="STATUS: ON-SCREEN", foreground="green")
                     else:
                         self.screen_status_label.config(text="STATUS: OFF-SCREEN", foreground="red")
+                    
+                    # Update gaze duration labels every 10th sample (efficient UI refresh)
+                    self.refresh_gaze_time_labels()
                         
         except queue.Empty:
             pass
@@ -590,7 +646,184 @@ class GazeAnalysisApp:
         # 4. Schedule next update
         self.timer_after_id = self.root.after(100, self.update_timer)
 
-    # -------------------- Data Analysis Methods --------------------
+    # -------------------- Gaze Duration Tracking Methods --------------------
+    def _format_ms(self, ms):
+        """
+        Convert milliseconds to MM:SS.t format.
+        Args:
+            ms: milliseconds (int or float)
+        Returns:
+            String in format "MM:SS.t"
+        """
+        total_seconds = ms / 1000.0
+        minutes = int(total_seconds // 60)
+        seconds = int(total_seconds % 60)
+        tenths = int((total_seconds % 1) * 10)
+        return f"{minutes:02d}:{seconds:02d}.{tenths}"
+
+    def update_gaze_durations(self, timestamp_ms, gaze_on_screen):
+        """
+        Track gaze on-screen and off-screen durations.
+        Called for each gaze sample from the queue.
+        
+        Args:
+            timestamp_ms: timestamp in milliseconds (from gaze sample)
+            gaze_on_screen: bool indicating if gaze is on-screen
+        """
+        # Initialize on first call
+        if self.last_timestamp is None:
+            self.last_timestamp = timestamp_ms
+            self.last_gaze_state = gaze_on_screen
+            return
+
+        # Calculate time delta
+        dt = timestamp_ms - self.last_timestamp
+
+        # Ignore invalid dt values (negative or impossibly large jumps)
+        # At 30-90 FPS, dt should be 11-33 ms. Reject anything outside reasonable bounds.
+        if dt < 0 or dt > 2000:
+            # Reset and skip this sample
+            self.last_timestamp = timestamp_ms
+            self.last_gaze_state = gaze_on_screen
+            return
+
+        # Add time to appropriate counter (use previous state)
+        if self.last_gaze_state is True:
+            self.total_on_screen_time += dt
+        elif self.last_gaze_state is False:
+            self.total_off_screen_time += dt
+
+        # Update state for next iteration
+        self.last_timestamp = timestamp_ms
+        self.last_gaze_state = gaze_on_screen
+
+    def refresh_gaze_time_labels(self):
+        """
+        Update all gaze duration UI labels with current values.
+        """
+        # Calculate percentages
+        total_time = self.total_on_screen_time + self.total_off_screen_time
+        if total_time > 0:
+            on_pct = (self.total_on_screen_time / total_time) * 100
+            off_pct = (self.total_off_screen_time / total_time) * 100
+        else:
+            on_pct = 0
+            off_pct = 0
+
+        # Format time strings
+        on_time_str = self._format_ms(self.total_on_screen_time)
+        off_time_str = self._format_ms(self.total_off_screen_time)
+
+        # Update labels
+        try:
+            self.gaze_on_screen_label.config(text=f"On-screen time: {on_time_str}")
+            self.gaze_off_screen_label.config(text=f"Off-screen time: {off_time_str}")
+            self.gaze_percentage_label.config(
+                text=f"On-screen {on_pct:.1f}% | Off-screen {off_pct:.1f}%"
+            )
+        except Exception:
+            pass
+
+    def reset_gaze_timers(self):
+        """
+        Reset all gaze duration counters and state variables.
+        Call this when a new recording session starts.
+        """
+        self.total_on_screen_time = 0
+        self.total_off_screen_time = 0
+        self.last_timestamp = None
+        self.last_gaze_state = None
+        self.refresh_gaze_time_labels()
+
+    def _compute_gaze_durations_from_csv(self, data):
+        """
+        Compute on-screen and off-screen durations using the same algorithm as live tracking.
+        
+        Args:
+            data: pandas DataFrame with 'timestamp' (ms) and 'on_screen' (bool) columns
+        
+        Returns:
+            tuple: (total_on_time_ms, total_off_time_ms, total_time_ms)
+        """
+        if len(data) < 2:
+            return 0, 0, 0
+        
+        total_on = 0
+        total_off = 0
+        
+        timestamps = data['timestamp'].values
+        on_screen = data['on_screen'].values
+        
+        for i in range(1, len(data)):
+            dt = timestamps[i] - timestamps[i - 1]
+            
+            # Ignore invalid dt values (same as live logic)
+            if dt < 0 or dt > 2000:
+                continue
+            
+            # Accumulate based on previous state
+            if on_screen[i - 1]:
+                total_on += dt
+            else:
+                total_off += dt
+        
+        total_time = total_on + total_off
+        return total_on, total_off, total_time
+
+    def _export_session_summary(self, csv_filepath, sample_count):
+        """
+        Export a JSON summary of the recording session with timing metrics.
+        
+        Args:
+            csv_filepath: Path to the saved gaze CSV file
+            sample_count: Total number of gaze samples recorded
+        """
+        try:
+            import json
+            
+            # Compute average FPS
+            total_duration_sec = (self.total_on_screen_time + self.total_off_screen_time) / 1000.0
+            avg_fps = sample_count / total_duration_sec if total_duration_sec > 0 else 0
+            
+            # Create summary dictionary
+            summary = {
+                "session_metadata": {
+                    "export_timestamp": datetime.now().isoformat(),
+                    "gaze_csv_path": csv_filepath,
+                    "sample_count": sample_count
+                },
+                "gaze_duration_analysis": {
+                    "total_on_screen_time_ms": self.total_on_screen_time,
+                    "total_off_screen_time_ms": self.total_off_screen_time,
+                    "total_session_duration_ms": self.total_on_screen_time + self.total_off_screen_time,
+                    "on_screen_percentage": (self.total_on_screen_time / (self.total_on_screen_time + self.total_off_screen_time) * 100) if (self.total_on_screen_time + self.total_off_screen_time) > 0 else 0,
+                    "off_screen_percentage": (self.total_off_screen_time / (self.total_on_screen_time + self.total_off_screen_time) * 100) if (self.total_on_screen_time + self.total_off_screen_time) > 0 else 0
+                },
+                "timing_metrics": {
+                    "total_duration_seconds": total_duration_sec,
+                    "total_on_screen_seconds": self.total_on_screen_time / 1000.0,
+                    "total_off_screen_seconds": self.total_off_screen_time / 1000.0,
+                    "average_fps": round(avg_fps, 2),
+                    "formatted_total_duration": self._format_ms(self.total_on_screen_time + self.total_off_screen_time),
+                    "formatted_on_screen_time": self._format_ms(self.total_on_screen_time),
+                    "formatted_off_screen_time": self._format_ms(self.total_off_screen_time)
+                }
+            }
+            
+            # Generate summary filename in same directory as CSV
+            summary_dir = os.path.dirname(csv_filepath)
+            summary_filename = f"session_summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            summary_filepath = os.path.join(summary_dir, summary_filename)
+            
+            # Write JSON file
+            with open(summary_filepath, 'w') as f:
+                json.dump(summary, f, indent=2)
+            
+            return summary_filepath
+        except Exception as e:
+            print(f"Warning: Failed to export session summary: {str(e)}")
+            return None
+
     def load_csv(self):
         filename = filedialog.askopenfilename(
             filetypes=[("CSV files", "*.csv")],
@@ -712,87 +945,115 @@ class GazeAnalysisApp:
             
         plt.close('all')
 
-        fig, ax = plt.subplots(figsize=(12, 6))
-        plt.style.use('seaborn-v0_8')
-
-        self.data['time_diff'] = self.data['timestamp'].diff()
-        movement_threshold = 50
+        # Compute movement for each sample
         self.data['movement'] = np.sqrt(
             self.data['x'].diff() ** 2 + self.data['y'].diff() ** 2
         )
-
-        presence_mask = self.data['on_screen']
-
-        movement_mask = (
-            (self.data['movement'] > movement_threshold) |
-            (self.data['movement'].between(5, movement_threshold))
-        )
-
-        attention_score = presence_mask.astype(int) * movement_mask.astype(int)
-
+        
+        # Compute gaze durations using live tracking algorithm
+        total_on_ms, total_off_ms, total_time_ms = self._compute_gaze_durations_from_csv(self.data)
+        total_sec = total_time_ms / 1000.0
+        
+        # Classify durations based on movement thresholds (30-90 FPS baseline: ~11-33ms per sample)
+        movement_threshold = 50
+        reading_threshold_min = 5
+        
+        total_no_movement = 0
+        total_reading = 0
+        total_scanning = 0
+        
+        timestamps = self.data['timestamp'].values
+        on_screen = self.data['on_screen'].values
+        movement = self.data['movement'].values
+        
+        for i in range(1, len(self.data)):
+            dt = timestamps[i] - timestamps[i - 1]
+            
+            # Ignore invalid dt values
+            if dt < 0 or dt > 2000:
+                continue
+            
+            # Only count time when on-screen
+            if on_screen[i - 1]:
+                mov = movement[i]
+                
+                if mov < reading_threshold_min:
+                    total_no_movement += dt
+                elif mov < movement_threshold:
+                    total_reading += dt
+                else:
+                    total_scanning += dt
+        
+        # Convert to seconds
+        no_movement_sec = total_no_movement / 1000.0
+        reading_sec = total_reading / 1000.0
+        scanning_sec = total_scanning / 1000.0
+        on_screen_sec = total_on_ms / 1000.0
+        
+        # Compute percentages
+        no_movement_pct = (no_movement_sec / total_sec * 100) if total_sec > 0 else 0
+        reading_pct = (reading_sec / total_sec * 100) if total_sec > 0 else 0
+        scanning_pct = (scanning_sec / total_sec * 100) if total_sec > 0 else 0
+        
+        # Format time strings
+        total_time_str = self._format_ms(total_time_ms)
+        no_movement_str = self._format_ms(total_no_movement)
+        reading_str = self._format_ms(total_reading)
+        scanning_str = self._format_ms(total_scanning)
+        
+        # Plot eye movement timeline
+        fig, ax = plt.subplots(figsize=(12, 6))
+        plt.style.use('seaborn-v0_8')
+        
         time_seconds = (self.data['timestamp'] - self.data['timestamp'].min()) / 1000
-
+        
         ax.plot(time_seconds, self.data['movement'], 'b-', alpha=0.5, label='Eye Movement')
         ax.axhline(y=movement_threshold, color='r', linestyle='--', label='High Movement Threshold')
-        ax.axhline(y=5, color='g', linestyle='--', label='Reading Movement Threshold')
-        ax.fill_between(time_seconds, 0, 5,
-                        where=self.data['movement'] < 5,
+        ax.axhline(y=reading_threshold_min, color='g', linestyle='--', label='Reading Movement Threshold')
+        
+        ax.fill_between(time_seconds, 0, reading_threshold_min,
+                        where=self.data['movement'] < reading_threshold_min,
                         color='red', alpha=0.2, label='No Movement')
-        ax.fill_between(time_seconds, 5, movement_threshold,
-                        where=self.data['movement'].between(5, movement_threshold),
+        ax.fill_between(time_seconds, reading_threshold_min, movement_threshold,
+                        where=self.data['movement'].between(reading_threshold_min, movement_threshold),
                         color='green', alpha=0.2, label='Reading Movement')
         ax.fill_between(time_seconds, movement_threshold, self.data['movement'].max(),
                         where=self.data['movement'] >= movement_threshold,
                         color='blue', alpha=0.2, label='Scanning Movement')
+        
         ax.set_title("Eye Movement Timeline", pad=20)
         ax.set_xlabel("Time (seconds)")
         ax.set_ylabel("Movement (pixels)")
         ax.grid(True, alpha=0.3)
         ax.legend(loc='upper right')
-
-        total_time = time_seconds.max()
-        mean_dt = self.data['time_diff'].mean() / 1000 if self.data['time_diff'].notna().any() else 0
-
-        attentive_time = attention_score.sum() * mean_dt if mean_dt > 0 else 0
-        attentive_percentage = (attentive_time / total_time * 100) if total_time > 0 else 0
-
-        reading_time = (
-                (self.data['movement'].between(5, movement_threshold)) &
-                presence_mask
-        ).sum() * mean_dt if mean_dt > 0 else 0
-
-        scanning_time = (
-                (self.data['movement'] >= movement_threshold) &
-                presence_mask
-        ).sum() * mean_dt if mean_dt > 0 else 0
-
-        total_time_str = f"{int(total_time // 60)}m {int(total_time % 60)}s"
-        attentive_time_str = f"{int(attentive_time // 60)}m {int(attentive_time % 60)}s"
-        reading_time_str = f"{int(reading_time // 60)}m {int(reading_time % 60)}s"
-        scanning_time_str = f"{int(scanning_time // 60)}m {int(scanning_time % 60)}s"
-
+        
         stats_text = f"""
-        📊 Analysis Statistics
-        ═══════════════════
+        📊 Attention Analysis (dt-based)
+        ════════════════════════════════
         
         🕒 Total Session Duration: {total_time_str}
-        👁 Total Attentive Time: {attentive_time_str} ({attentive_percentage:.1f}%)
-        📖 Reading Time: {reading_time_str} ({(reading_time / total_time * 100) if total_time > 0 else 0:.1f}%)
-        🔍 Scanning Time: {scanning_time_str} ({(scanning_time / total_time * 100) if total_time > 0 else 0:.1f}%)
+        👁 Total On-Screen Time: {self._format_ms(total_on_ms)} ({on_screen_sec/total_sec*100:.1f}%)
+        
+        Movement Classification:
+        ━━━━━━━━━━━━━━━━━━━━━━
+        🛑 No Movement (<{reading_threshold_min} px): {no_movement_str} ({no_movement_pct:.1f}%)
+        📖 Reading Movement ({reading_threshold_min}-{movement_threshold} px): {reading_str} ({reading_pct:.1f}%)
+        🔍 Scanning Movement (≥{movement_threshold} px): {scanning_str} ({scanning_pct:.1f}%)
         
         Analysis Parameters:
         • High movement threshold: {movement_threshold} pixels
-        • Reading movement range: 5-{movement_threshold} pixels
+        • Reading movement range: {reading_threshold_min}-{movement_threshold} pixels
         • Total samples analyzed: {len(self.data)}
+        • Computation: Same dt-based algorithm as real-time tracking
         """
-
+        
         stats_frame = ttk.Frame(self.results_frame)
         stats_frame.pack(fill='x', padx=20, pady=10)
-
+        
         stats_label = ttk.Label(stats_frame, text=stats_text,
                                 style='Status.TLabel', justify='left')
         stats_label.pack()
-
+        
         plt.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.results_frame)
         canvas.draw()
@@ -803,28 +1064,35 @@ class GazeAnalysisApp:
             messagebox.showwarning("Warning", "Please load a CSV file first")
             return
 
-        presence_mask = self.data['on_screen']
-
-        self.data['time_diff'] = self.data['timestamp'].diff()
-
-        total_time = (self.data['timestamp'].max() - self.data['timestamp'].min()) / 1000
-        presence_time = self.data[presence_mask]['time_diff'].sum() / 1000
-
-        total_time_str = f"{int(total_time // 60)}m {int(total_time % 60)}s"
-        presence_time_str = f"{int(presence_time // 60)}m {int(presence_time % 60)}s"
-        presence_percentage = (presence_time / total_time * 100) if total_time > 0 else 0
+        # Compute gaze durations using live tracking algorithm
+        total_on_ms, total_off_ms, total_time_ms = self._compute_gaze_durations_from_csv(self.data)
+        
+        # Convert to seconds
+        total_on_sec = total_on_ms / 1000.0
+        total_off_sec = total_off_ms / 1000.0
+        total_sec = total_time_ms / 1000.0
+        
+        # Compute percentage
+        presence_percentage = (total_on_sec / total_sec * 100) if total_sec > 0 else 0
+        
+        # Format time strings using the same format as live durations
+        on_time_str = self._format_ms(total_on_ms)
+        off_time_str = self._format_ms(total_off_ms)
+        total_time_str = self._format_ms(total_time_ms)
 
         result_text = f"""
         👤 Presence Analysis Results
         ═══════════════════════════
         
         🕒 Total Session Duration: {total_time_str}
-        ✓ Time Present at Screen: {presence_time_str}
+        ✓ Time Present at Screen: {on_time_str}
+        ✗ Time Off-Screen: {off_time_str}
         📊 Presence Percentage: {presence_percentage:.1f}%
         
         Analysis Parameters:
         • Screen bounds: 1920x1200
         • Total samples analyzed: {len(self.data)}
+        • Computation: Same dt-based algorithm as real-time tracking
         """
 
         for widget in self.results_frame.winfo_children():
