@@ -8,7 +8,10 @@ import numpy as np
 from datetime import datetime
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.colors import LogNorm
+from scipy.ndimage import gaussian_filter
 import threading
+import sys
 import queue  # Vital for thread safety
 import os     # Moved to top
 import shutil # Moved to top
@@ -76,7 +79,14 @@ class GazeAnalysisApp:
 
         # Adjustable software sampling rate (downsampling)
         self.target_fps = 90           # default sampling FPS
-        self._last_save_time = 0.0     # last time we saved/processed a sample
+        self._last_save_time = 0.0     # last time we saved/processed a sample (perf_counter)
+        self._flush_counter = 0        # counter for CSV flush operations
+
+        # Heatmap smoothing parameter (sigma for gaussian_filter)
+        self.heatmap_sigma_var = tk.DoubleVar(value=2.0)
+
+        # Heatmap color scale preference (logarithmic by default)
+        self.heatmap_use_log_var = tk.BooleanVar(value=True)
 
         # Timer state
         self.timer_running = False
@@ -104,9 +114,20 @@ class GazeAnalysisApp:
         self.socket = None
 
         self.setup_gui()
-        
-        # Start the GUI update loop
-        self.process_queue()
+        # Start the GUI → queue polling loop
+        # Create a persistent bound-method to avoid ephemeral Tcl command names
+        self._process_queue_callback = self.process_queue
+        self._process_queue_after_id = None
+        try:
+            if self.root.winfo_exists():
+                # schedule the first call; process_queue will reschedule itself
+                self._process_queue_after_id = self.root.after(15, self._process_queue_callback)
+        except Exception:
+            # If scheduling fails, fall back to direct call once
+            try:
+                self.process_queue()
+            except Exception:
+                pass
 
     def setup_styles(self):
         style = ttk.Style()
@@ -316,6 +337,39 @@ class GazeAnalysisApp:
         ModernButton(analysis_content, text="📍 Space Map",
                      command=self.generate_SpaceMap).pack(side='left', padx=10)
 
+        # Heatmap smoothing controls
+        heatmap_settings = ttk.Frame(analysis_frame)
+        heatmap_settings.pack(fill='x', padx=20, pady=(6, 12))
+
+        ttk.Label(heatmap_settings, text="Heatmap sigma:").pack(side='left')
+        try:
+            sigma_spin = ttk.Spinbox(
+                heatmap_settings,
+                from_=0.0,
+                to=10.0,
+                increment=0.5,
+                textvariable=self.heatmap_sigma_var,
+                width=5
+            )
+        except Exception:
+            # Fallback to tk.Spinbox if ttk.Spinbox not available
+            sigma_spin = tk.Spinbox(
+                heatmap_settings,
+                from_=0.0,
+                to=10.0,
+                increment=0.5,
+                textvariable=self.heatmap_sigma_var,
+                width=5
+            )
+        sigma_spin.pack(side='left', padx=(6, 10))
+
+        # Wire auto-regeneration callbacks for heatmap controls
+        def on_sigma_change(*args):
+            if hasattr(self, 'data'):
+                self.generate_heatmap()
+        
+        self.heatmap_sigma_var.trace('w', on_sigma_change)
+
         self.results_frame = ttk.LabelFrame(self.analysis_frame, text="Analysis Results")
         self.results_frame.pack(fill='both', expand=True, padx=20, pady=10)
 
@@ -427,74 +481,165 @@ class GazeAnalysisApp:
             self.screen_status_label.config(text="STATUS: NOT TRACKING", foreground="gray")
             self.gaze_viz.update_position(0, 0)
 
+    def shutdown(self):
+        """Cleanly stop background work so the process can exit and be restarted.
+
+        This stops tracking, joins threads (best-effort), closes sockets and the
+        ZMQ context, cancels pending after callbacks, stops timers, and closes
+        any open files.
+        """
+        # Stop tracking thread
+        try:
+            if self.is_tracking:
+                self.is_tracking = False
+        except Exception:
+            pass
+
+        try:
+            if self.tracking_thread and self.tracking_thread.is_alive():
+                self.tracking_thread.join(timeout=1.0)
+        except Exception:
+            pass
+
+        # Close socket and terminate ZMQ context
+        try:
+            if self.socket:
+                try:
+                    self.socket.close()
+                except Exception:
+                    pass
+                self.socket = None
+        except Exception:
+            pass
+
+        try:
+            if self.context:
+                try:
+                    self.context.term()
+                except Exception:
+                    pass
+                self.context = None
+        except Exception:
+            pass
+
+        # Close CSV file if open
+        try:
+            if hasattr(self, 'csv_file'):
+                try:
+                    self.csv_file.close()
+                except Exception:
+                    pass
+                delattr(self, 'csv_file')
+        except Exception:
+            pass
+
+        # Stop timer and cancel its after callback
+        try:
+            self.stop_timer()
+        except Exception:
+            pass
+
+        # Cancel process_queue after callback if present
+        try:
+            if hasattr(self, '_process_queue_after_id') and self._process_queue_after_id is not None:
+                try:
+                    if self.root.winfo_exists():
+                        self.root.after_cancel(self._process_queue_after_id)
+                except Exception:
+                    pass
+                self._process_queue_after_id = None
+        except Exception:
+            pass
+
     def tracking_loop(self):
         # Runs in BACKGROUND THREAD
-        # We do NOT update GUI here. We put data in queue.
+        # Produces samples at target_fps regardless of whether Tobii data arrives
+        
+        # High-resolution timer for precise sampling
+        next_sample_time = time.perf_counter()
+        sample_interval = 1.0 / float(getattr(self, 'target_fps', 90))
+        
+        # Last received gaze data (fallback if Tobii stops sending)
+        last_raw_x = -1
+        last_raw_y = -1
+        last_validity = 1  # invalid by default
+        last_tobii_timestamp = 0.0
+        
         while self.is_tracking:
-            # Use poll to avoid blocking indefinitely
-            if self.socket.poll(50):
+            now = time.perf_counter()
+            
+            # Check for new Tobii data (non-blocking)
+            if self.socket.poll(0):
                 try:
                     message = self.socket.recv_string()
                     parts = message.split()
 
                     if len(parts) >= 4 and parts[0] == "TobiiStream":
-                        timestamp = float(parts[1])
-                        raw_x = float(parts[2])
-                        raw_y = float(parts[3])
-
-                        x = max(0, min(raw_x, 1920))
-                        y = max(0, min(raw_y, 1200))
-
+                        # Update last received gaze data
+                        # Use REAL TIME (perf_counter) when packet was received, not Tobii's timestamp
+                        last_tobii_timestamp = time.perf_counter()
+                        last_raw_x = float(parts[2])
+                        last_raw_y = float(parts[3])
+                        
                         if len(parts) >= 5:
                             try:
-                                validity = int(parts[4])
+                                last_validity = int(parts[4])
                             except ValueError:
-                                validity = 1
+                                last_validity = 1
                         else:
-                            validity = 0 
-
-                        is_valid = (validity == 0)
-                        within_bounds = (0 <= raw_x <= 1920) and (0 <= raw_y <= 1200)
-                        on_screen = bool(is_valid and within_bounds)
-
-                        # ---------- Software downsampling ----------
-                        try:
-                            current_time = time.time()
-                            sample_interval = 1.0 / float(getattr(self, 'target_fps', 90))
-                        except Exception:
-                            current_time = time.time()
-                            sample_interval = 1.0 / 90.0
-
-                        if current_time - getattr(self, '_last_save_time', 0.0) >= sample_interval:
-                            # Save to CSV
-                            try:
-                                self.writer.writerow([timestamp, raw_x, raw_y, on_screen])
-                            except Exception:
-                                pass
-
-                            self.sample_count += 1
-                            self._last_save_time = current_time
-
-                            # Send data to GUI Thread (also at downsampled rate)
-                            data_packet = {
-                                'x': x,
-                                'y': y,
-                                'raw_x': raw_x,
-                                'raw_y': raw_y,
-                                'on_screen': on_screen,
-                                'timestamp_ms': int(timestamp),  # Tobii timestamp is already in milliseconds
-                                'count': self.sample_count
-                            }
-                            self.data_queue.put(data_packet)
-                        # ------------------------------------------
+                            last_validity = 0
                 except zmq.ZMQError:
-                    continue
-            else:
-                # No data received, sleep briefly to not hog CPU
-                time.sleep(0.001)
+                    pass
+            
+            # Produce sample at fixed intervals (regardless of Tobii data)
+            if now >= next_sample_time:
+                # Normalize gaze data (use last received, or fallback to -1, -1)
+                norm_x, norm_y, on_screen = self._normalize_gaze_data(
+                    last_raw_x, last_raw_y, last_validity, last_tobii_timestamp
+                )
+                
+                # Clamp valid gaze to canvas bounds for visualization
+                vis_x = max(0, min(last_raw_x, 1920)) if on_screen else 0
+                vis_y = max(0, min(last_raw_y, 1200)) if on_screen else 0
+                
+                # Use system timestamp (in milliseconds) for this sample
+                sample_timestamp_ms = now * 1000
+                
+                # ALWAYS write CSV row
+                try:
+                    self.writer.writerow([sample_timestamp_ms, norm_x, norm_y, on_screen])
+                    
+                    # Flush only every 30 samples to avoid blocking loop
+                    self._flush_counter += 1
+                    if self._flush_counter >= 30:
+                        self.csv_file.flush()
+                        self._flush_counter = 0
+                except Exception:
+                    pass
+                
+                self.sample_count += 1
+                
+                # ALWAYS send data to GUI queue
+                data_packet = {
+                    'x': vis_x,
+                    'y': vis_y,
+                    'raw_x': norm_x,
+                    'raw_y': norm_y,
+                    'on_screen': on_screen,
+                    'timestamp_ms': int(sample_timestamp_ms),
+                    'count': self.sample_count
+                }
+                self.data_queue.put(data_packet)
+                
+                # Schedule next sample
+                next_sample_time += sample_interval
+                
+                # Prevent accumulation if loop falls behind (e.g., after pause/resume)
+                if now > next_sample_time + sample_interval:
+                    next_sample_time = now + sample_interval
 
     def process_queue(self):
-        # Runs in MAIN THREAD
+    # Runs in MAIN THREAD
         try:
             while True:
                 # Get data without blocking
@@ -503,31 +648,36 @@ class GazeAnalysisApp:
                 # Update gaze duration tracking with every sample
                 self.update_gaze_durations(data['timestamp_ms'], data['on_screen'])
                 
-                # Visual update
-                self.gaze_viz.update_position(data['x'], data['y'])
+                # Visual update (only when on-screen; keep previous position otherwise)
+                if data['on_screen']:
+                    self.gaze_viz.update_position(data['x'], data['y'])
                 
                 # Text updates (Throttle to every 10th sample to reduce CPU load)
                 if data['count'] % 10 == 0:
-                    self.coordinates_label.config(
-                        text=f"👀 Position: x={data['raw_x']:.2f}, y={data['raw_y']:.2f}"
-                    )
+                    if data['on_screen']:
+                        self.coordinates_label.config(
+                            text=f"👀 Position: x={data['raw_x']:.2f}, y={data['raw_y']:.2f}"
+                        )
+                        self.screen_status_label.config(
+                            text="STATUS: ON-SCREEN", foreground="green"
+                        )
+                    else:
+                        self.coordinates_label.config(text="👀 Position: --")
+                        self.screen_status_label.config(
+                            text="STATUS: OFF-SCREEN / WAITING", foreground="red"
+                        )
+
                     self.status_label.config(
                         text=f"✅ Active - Samples: {data['count']}"
                     )
-                    
-                    if data['on_screen']:
-                        self.screen_status_label.config(text="STATUS: ON-SCREEN", foreground="green")
-                    else:
-                        self.screen_status_label.config(text="STATUS: OFF-SCREEN", foreground="red")
-                    
-                    # Update gaze duration labels every 10th sample (efficient UI refresh)
                     self.refresh_gaze_time_labels()
-                        
+
         except queue.Empty:
             pass
-        
-        # Schedule next check in 15ms (~60fps check rate)
-        self.root.after(15, self.process_queue)
+
+        # Reschedule next poll (~60fps)
+        if self.root.winfo_exists():
+            self.root.after(15, self.process_queue)
 
 # -------------------- Fixed Timer Methods --------------------
     def start_timer(self):
@@ -660,6 +810,40 @@ class GazeAnalysisApp:
         seconds = int(total_seconds % 60)
         tenths = int((total_seconds % 1) * 10)
         return f"{minutes:02d}:{seconds:02d}.{tenths}"
+
+    def _normalize_gaze_data(self, raw_x, raw_y, validity, last_tobii_timestamp):
+        """
+        Normalize gaze data to handle invalid or out-of-bounds values.
+        Includes tracking loss detection to ensure OFF-SCREEN on sensor loss.
+        
+        Args:
+            raw_x: raw X coordinate from Tobii
+            raw_y: raw Y coordinate from Tobii
+            validity: validity flag (0 = valid, non-zero = invalid)
+            last_tobii_timestamp: timestamp (in seconds) of last Tobii sample
+        
+        Returns:
+            tuple: (normalized_x, normalized_y, on_screen_bool)
+                - If tracking lost (no sample for >50ms): (-1, -1, False)
+                - If valid and in bounds: (raw_x, raw_y, True)
+                - If invalid or out-of-bounds: (-1, -1, False)
+        """
+        # Detect tracking loss: no new Tobii sample for >50 ms
+        now = time.perf_counter()
+        tracking_lost = (now - last_tobii_timestamp) > 0.050
+        
+        if tracking_lost:
+            return -1, -1, False
+        
+        # Check validity and bounds
+        is_valid = (validity == 0)
+        within_bounds = (0 <= raw_x <= 1920) and (0 <= raw_y <= 1200)
+        on_screen = bool(is_valid and within_bounds)
+        
+        if on_screen:
+            return raw_x, raw_y, True
+        else:
+            return -1, -1, False
 
     def update_gaze_durations(self, timestamp_ms, gaze_on_screen):
         """
@@ -862,24 +1046,50 @@ class GazeAnalysisApp:
         fig, ax = plt.subplots(figsize=(10, 8))
         plt.style.use('seaborn-v0_8')
 
-        x_data = np.clip(self.data['x'], 0, 1920)
-        y_data = np.clip(self.data['y'], 0, 1200)
+        # Exclude invalid/off-screen samples so they do not get plotted at (0,0)
+        valid = self.data[self.data['on_screen'] == True]
+        x_data = valid['x']
+        y_data = valid['y']
 
-        heatmap = ax.hist2d(
+        # Compute raw 2D histogram, then apply Gaussian smoothing for better visualization
+        heatmap_data, xedges, yedges = np.histogram2d(
             x_data, y_data,
             bins=50,
-            cmap='hot',
             range=[[0, 1920], [0, 1200]]
         )
 
-        plt.colorbar(heatmap[3], ax=ax, label='Gaze Density')
+        # Smooth the histogram with a Gaussian filter (sigma controls smoothing)
+        try:
+            sigma = float(self.heatmap_sigma_var.get())
+        except Exception:
+            sigma = 2.0
+        smoothed = gaussian_filter(heatmap_data, sigma=sigma)
+
+        # Display the smoothed heatmap. Transpose so x/y align with histogram2d axes
+        # Always use logarithmic normalization with proper vmin based on minimum positive value
+        min_positive = smoothed[smoothed > 0].min() if np.any(smoothed > 0) else 1e-3
+        vmin = max(min_positive, 1e-3)
+        vmax = smoothed.max() if smoothed.size > 0 else 1
+        
+        norm = LogNorm(vmin=vmin, vmax=vmax)
+
+        img = ax.imshow(
+            smoothed.T,
+            origin='lower',
+            cmap='turbo',
+            extent=[0, 1920, 0, 1200],
+            aspect='auto',
+            norm=norm
+        )
+
+        # Colorbar for the smoothed heatmap
+        fig.colorbar(img, ax=ax, label='Gaze Density')
         ax.set_title("Gaze Heatmap Analysis", pad=20)
         ax.set_xlabel("Screen X Coordinate")
         ax.set_ylabel("Screen Y Coordinate")
 
         ax.set_xlim(0, 1920)
-        ax.set_ylim(1200, 0) 
-
+        ax.set_ylim(1200, 0)  
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
 
@@ -1106,4 +1316,37 @@ class GazeAnalysisApp:
 if __name__ == "__main__":
     root = tk.Tk()
     app = GazeAnalysisApp(root)
+    def on_closing():
+        # Perform full app shutdown then destroy and exit so the process ends
+        try:
+            app.shutdown()
+        except Exception:
+            pass
+        try:
+            if root.winfo_exists():
+                # Cancel any remaining after callbacks (including ephemeral Tcl commands)
+                try:
+                    info = root.tk.call('after', 'info')
+                    # `info` may be a Tcl list or empty string
+                    if info:
+                        # Normalize to Python list
+                        if isinstance(info, str):
+                            ids = info.split()
+                        else:
+                            ids = list(info)
+                        for aid in ids:
+                            try:
+                                root.after_cancel(aid)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                root.destroy()
+        except Exception:
+            pass
+        try:
+            sys.exit(0)
+        except Exception:
+            pass
+    root.protocol("WM_DELETE_WINDOW", on_closing)
     root.mainloop()
