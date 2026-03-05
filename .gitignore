@@ -82,3 +82,6 @@ venv/
 # Build directories
 build/
 dist/
+
+recordings/
+*.avi
