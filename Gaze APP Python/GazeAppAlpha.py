@@ -205,7 +205,38 @@ class GazeAnalysisApp:
         self.setup_analysis_tab()
 
     def setup_tracking_tab(self):
-        control_frame = ttk.LabelFrame(self.tracking_frame, text="Tracking Control")
+        # Wrap entire tracking tab in a scrollable canvas (same pattern as analysis tab)
+        _canvas = tk.Canvas(self.tracking_frame, borderwidth=0, highlightthickness=0)
+        _scrollbar = ttk.Scrollbar(self.tracking_frame, orient='vertical',
+                                    command=_canvas.yview)
+        _canvas.configure(yscrollcommand=_scrollbar.set)
+        _scrollbar.pack(side='right', fill='y')
+        _canvas.pack(side='left', fill='both', expand=True)
+
+        _inner = ttk.Frame(_canvas)
+        _canvas_window = _canvas.create_window((0, 0), window=_inner, anchor='nw')
+
+        def _on_frame_configure(event):
+            _canvas.configure(scrollregion=_canvas.bbox('all'))
+
+        def _on_canvas_configure(event):
+            _canvas.itemconfig(_canvas_window, width=event.width)
+
+        _inner.bind('<Configure>', _on_frame_configure)
+        _canvas.bind('<Configure>', _on_canvas_configure)
+
+        def _on_mousewheel(event):
+            _canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+
+        _canvas.bind('<Enter>',
+                     lambda e: _canvas.bind_all('<MouseWheel>', _on_mousewheel))
+        _canvas.bind('<Leave>',
+                     lambda e: _canvas.unbind_all('<MouseWheel>'))
+
+        # All content packs into _inner instead of self.tracking_frame
+        _tf = _inner   # alias — every pack() call below uses _tf
+
+        control_frame = ttk.LabelFrame(_tf, text="Tracking Control")
         control_frame.pack(fill='x', padx=20, pady=10)
 
         button_frame = ttk.Frame(control_frame)
@@ -230,12 +261,12 @@ class GazeAnalysisApp:
         self.fps_combo.pack(side='left', padx=(8, 0))
         self.fps_combo.bind('<<ComboboxSelected>>', self.on_fps_change)
 
-        viz_frame = ttk.LabelFrame(self.tracking_frame, text="Live Gaze Visualization")
+        viz_frame = ttk.LabelFrame(_tf, text="Live Gaze Visualization")
         viz_frame.pack(fill='x', padx=20, pady=10)
         self.gaze_viz = GazeVisualization(viz_frame)
         self.gaze_viz.pack(padx=20, pady=15)
 
-        status_frame = ttk.LabelFrame(self.tracking_frame, text="Live Status")
+        status_frame = ttk.LabelFrame(_tf, text="Live Status")
         status_frame.pack(fill='x', padx=20, pady=10)
         status_content = ttk.Frame(status_frame)
         status_content.pack(padx=20, pady=15)
@@ -258,7 +289,7 @@ class GazeAnalysisApp:
         self.screen_status_label.pack(pady=(10, 0))
 
         # Gaze duration display
-        gaze_duration_frame = ttk.LabelFrame(self.tracking_frame,
+        gaze_duration_frame = ttk.LabelFrame(_tf,
                                              text="Gaze Duration Analysis")
         gaze_duration_frame.pack(fill='x', padx=20, pady=10)
         duration_content = ttk.Frame(gaze_duration_frame)
@@ -281,7 +312,7 @@ class GazeAnalysisApp:
         self.gaze_percentage_label.pack(pady=5)
 
         # Timer controls
-        timer_frame = ttk.LabelFrame(self.tracking_frame, text="Timer")
+        timer_frame = ttk.LabelFrame(_tf, text="Timer")
         timer_frame.pack(fill='x', padx=20, pady=10)
         timer_content = ttk.Frame(timer_frame)
         timer_content.pack(padx=20, pady=10)
@@ -341,6 +372,37 @@ class GazeAnalysisApp:
             pass
 
     def setup_analysis_tab(self):
+        # Wrap entire analysis tab in a scrollable canvas so nothing gets clipped
+        canvas = tk.Canvas(self.analysis_frame, borderwidth=0, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self.analysis_frame, orient='vertical',
+                                  command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side='right', fill='y')
+        canvas.pack(side='left', fill='both', expand=True)
+
+        # Inner frame that holds all the actual content
+        inner = ttk.Frame(canvas)
+        inner_id = canvas.create_window((0, 0), window=inner, anchor='nw')
+
+        def _on_inner_configure(event):
+            canvas.configure(scrollregion=canvas.bbox('all'))
+
+        def _on_canvas_configure(event):
+            # Make inner frame match canvas width so content fills horizontally
+            canvas.itemconfig(inner_id, width=event.width)
+
+        inner.bind('<Configure>', _on_inner_configure)
+        canvas.bind('<Configure>', _on_canvas_configure)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+        canvas.bind_all('<MouseWheel>', _on_mousewheel)
+
+        # Redirect self.analysis_frame references inside this method to inner
+        _orig_analysis_frame = self.analysis_frame
+        self.analysis_frame = inner
+
         file_frame = ttk.LabelFrame(self.analysis_frame, text="Data Source")
         file_frame.pack(fill='x', padx=20, pady=10)
         file_content = ttk.Frame(file_frame)
@@ -384,6 +446,99 @@ class GazeAnalysisApp:
 
         self.heatmap_sigma_var.trace('w', on_sigma_change)
 
+        # ---- Session Analysis section ----
+        session_frame = ttk.LabelFrame(self.analysis_frame,
+                                       text="Session Engagement Analysis")
+        session_frame.pack(fill='x', padx=20, pady=10)
+
+        sf_top = ttk.Frame(session_frame)
+        sf_top.pack(fill='x', padx=16, pady=(10, 4))
+
+        ttk.Label(sf_top, text="Session folder:",
+                  font=('Helvetica', 10, 'bold')).pack(side='left')
+        self._session_folder_var = tk.StringVar(value="")
+        ttk.Entry(sf_top, textvariable=self._session_folder_var,
+                  width=42).pack(side='left', padx=(8, 6))
+        ttk.Button(sf_top, text="📂 Browse",
+                   command=self._browse_session_folder).pack(side='left', padx=4)
+        ttk.Button(sf_top, text="📂 Use Last Session",
+                   command=self._use_last_session).pack(side='left', padx=4)
+
+        sf_btn = ttk.Frame(session_frame)
+        sf_btn.pack(fill='x', padx=16, pady=(4, 10))
+        ttk.Button(sf_btn, text="▶  Run Full Analysis",
+                   command=self._run_session_analysis).pack(side='left', padx=4)
+        ttk.Button(sf_btn, text="📈  Timeline",
+                   command=lambda: self._show_analysis_image(
+                       'engagement_timeline.png')).pack(side='left', padx=4)
+        ttk.Button(sf_btn, text="🔥  Heatmap",
+                   command=lambda: self._show_analysis_image(
+                       'gaze_heatmap.png')).pack(side='left', padx=4)
+        ttk.Button(sf_btn, text="📊  Signal Summary",
+                   command=lambda: self._show_analysis_image(
+                       'signal_summary.png')).pack(side='left', padx=4)
+        ttk.Button(sf_btn, text="📉  Engagement Score",
+                   command=lambda: self._show_analysis_image(
+                       'engagement_score.png')).pack(side='left', padx=4)
+
+        # Download buttons row
+        sf_dl = ttk.Frame(session_frame)
+        sf_dl.pack(fill='x', padx=16, pady=(0, 4))
+        ttk.Label(sf_dl, text="Download:",
+                  font=('Helvetica', 9, 'bold')).pack(side='left', padx=(0, 6))
+        ttk.Button(sf_dl, text="⬇  Session Report (.xlsx)",
+                   command=self._download_session_xlsx).pack(side='left', padx=4)
+
+        self._session_status_label = ttk.Label(
+            session_frame,
+            text="Select a session folder and click Run Full Analysis.",
+            foreground='gray')
+        self._session_status_label.pack(anchor='w', padx=16, pady=(0, 8))
+
+        # ---- Multi-session comparison section ----
+        compare_frame = ttk.LabelFrame(self.analysis_frame,
+                                       text="Multi-Session Comparison")
+        compare_frame.pack(fill='x', padx=20, pady=(0, 10))
+
+        cf_top = ttk.Frame(compare_frame)
+        cf_top.pack(fill='x', padx=16, pady=(10, 4))
+
+        ttk.Button(cf_top, text="➕ Add Session",
+                   command=self._add_comparison_session).pack(side='left', padx=4)
+        ttk.Button(cf_top, text="🗑 Clear All",
+                   command=self._clear_comparison_sessions).pack(side='left', padx=4)
+
+        # Session list display
+        self._comparison_listbox = tk.Listbox(
+            compare_frame, height=4, selectmode='single',
+            font=('Courier', 9))
+        self._comparison_listbox.pack(fill='x', padx=16, pady=(4, 4))
+
+        cf_btn = ttk.Frame(compare_frame)
+        cf_btn.pack(fill='x', padx=16, pady=(0, 10))
+        ttk.Button(cf_btn, text="▶  Run Comparison",
+                   command=self._run_comparison).pack(side='left', padx=4)
+        ttk.Button(cf_btn, text="📊  Score Bars",
+                   command=lambda: self._show_comparison_image(
+                       'comparison_scores.png')).pack(side='left', padx=4)
+        ttk.Button(cf_btn, text="📈  Score Curves",
+                   command=lambda: self._show_comparison_image(
+                       'comparison_curves.png')).pack(side='left', padx=4)
+        ttk.Button(cf_btn, text="📉  Signal Breakdown",
+                   command=lambda: self._show_comparison_image(
+                       'comparison_signals.png')).pack(side='left', padx=4)
+
+        self._comparison_status_label = ttk.Label(
+            compare_frame,
+            text="Add at least 2 analysed sessions to compare.",
+            foreground='gray')
+        self._comparison_status_label.pack(anchor='w', padx=16, pady=(0, 8))
+
+        # Internal state
+        self._comparison_folders = []   # list of absolute folder paths
+        self._comparison_output_dir = None
+
+        # ---- Results area ----
         self.results_frame = ttk.LabelFrame(self.analysis_frame,
                                             text="Analysis Results")
         self.results_frame.pack(fill='both', expand=True, padx=20, pady=10)
@@ -397,6 +552,9 @@ class GazeAnalysisApp:
         )
         ttk.Label(self.results_frame, text=welcome_text,
                   style='Status.TLabel').pack(padx=20, pady=20)
+
+        # Restore analysis_frame to the original tab frame
+        self.analysis_frame = _orig_analysis_frame
 
     # -----------------------------------------------------------------------
     # GUI-driven tracking (Start / Stop buttons)
@@ -608,21 +766,6 @@ class GazeAnalysisApp:
 
         Called by MainController to achieve a single unified window.
         root            -- the master Tk() window (for after() scheduling)
-        tracking_frame  -- ttk.Frame for the Live Tracking tab
-        analysis_frame  -- ttk.Frame for the Data Analysis tab
-        """
-        return GazeAnalysisApp(
-            root,
-            tracking_frame=tracking_frame,
-            analysis_frame=analysis_frame,
-        )
-
-    @staticmethod
-    def attach_to_tabs(root, tracking_frame, analysis_frame):
-        """Embed the gaze UI into pre-existing frames (no new window created).
-
-        Called by MainController to achieve a single unified window.
-        root            -- the master Tk() window (needed for after() scheduling)
         tracking_frame  -- ttk.Frame for the Live Tracking tab
         analysis_frame  -- ttk.Frame for the Data Analysis tab
         """
@@ -1054,6 +1197,539 @@ class GazeAnalysisApp:
         except Exception as e:
             print(f"[WARN] Failed to export session summary: {e}")
             return None
+
+    # -----------------------------------------------------------------------
+    # Analysis tab — session folder analysis
+    # -----------------------------------------------------------------------
+    def _browse_session_folder(self):
+        """Let the user pick a session recording folder."""
+        # Default to the recordings/ folder so the user sees session folders
+        # directly, not the analysis subfolders inside them
+        here = os.path.dirname(os.path.abspath(__file__))
+        recordings_dir = os.path.normpath(os.path.join(here, '..', 'recordings'))
+        if not os.path.isdir(recordings_dir):
+            recordings_dir = here
+
+        folder = filedialog.askdirectory(
+            title="Select Session Folder (e.g. both_20260306_110143)",
+            initialdir=recordings_dir)
+        if folder:
+            # Guard against accidentally selecting the analysis subfolder
+            if os.path.basename(folder) == 'analysis':
+                folder = os.path.dirname(folder)
+            self._session_folder_var.set(folder)
+            self._session_status_label.config(
+                text=f"Folder selected: {os.path.basename(folder)}",
+                foreground='black')
+
+    def _use_last_session(self):
+        """Auto-fill the most recent session folder.
+
+        Priority:
+          1. _last_session_folder set by MainController during this app run
+          2. Most recently modified folder inside recordings/
+        """
+        # Priority 1: session recorded in this app run
+        last = getattr(self.root, '_last_session_folder', None)
+        if last and os.path.isdir(last):
+            self._session_folder_var.set(last)
+            self._session_status_label.config(
+                text=f"Using last session: {os.path.basename(last)}",
+                foreground='black')
+            return
+
+        # Priority 2: scan recordings/ folder for the most recent session
+        try:
+            here = os.path.dirname(os.path.abspath(__file__))
+            recordings_dir = os.path.normpath(
+                os.path.join(here, '..', 'recordings'))
+
+            if os.path.isdir(recordings_dir):
+                # Get all session subfolders (must contain tobii_gaze.csv)
+                sessions = [
+                    os.path.join(recordings_dir, d)
+                    for d in os.listdir(recordings_dir)
+                    if os.path.isdir(os.path.join(recordings_dir, d))
+                    and os.path.exists(
+                        os.path.join(recordings_dir, d, 'tobii_gaze.csv'))
+                ]
+                if sessions:
+                    # Sort by modification time, pick the newest
+                    latest = max(sessions, key=os.path.getmtime)
+                    self._session_folder_var.set(latest)
+                    self._session_status_label.config(
+                        text=f"Latest session: {os.path.basename(latest)}",
+                        foreground='black')
+                    return
+
+            self._session_status_label.config(
+                text="No sessions found in recordings/ — use Browse instead.",
+                foreground='gray')
+        except Exception as e:
+            self._session_status_label.config(
+                text=f"Could not find sessions: {e}",
+                foreground='gray')
+
+    def _run_session_analysis(self):
+        """Run the full engagement analysis in a background thread."""
+        folder = self._session_folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Warning",
+                                   "Please select a valid session folder first.")
+            return
+
+        # Check required files exist
+        required = ['tobii_gaze.csv', 'upper_body.csv']
+        missing = [f for f in required
+                   if not os.path.exists(os.path.join(folder, f))]
+        if missing:
+            messagebox.showerror(
+                "Missing Files",
+                f"Required files not found in folder:\n" + "\n".join(missing))
+            return
+
+        self._session_status_label.config(
+            text="⏳ Running analysis… please wait.",
+            foreground='#e67e22')
+        self.root.update_idletasks()
+
+        # Always resolve to absolute path before passing to background thread
+        abs_folder = os.path.abspath(folder)
+
+        def _worker():
+            try:
+                import importlib.util, traceback as _tb
+
+                # GazeAppAlpha.py is in <project>/Gaze APP Python/
+                # engagement_analysis.py is in <project>/analysis/
+                here = os.path.dirname(os.path.abspath(__file__))
+                script = os.path.normpath(
+                    os.path.join(here, '..', 'analysis',
+                                 'engagement_analysis.py'))
+
+                if not os.path.exists(script):
+                    raise FileNotFoundError(
+                        f"engagement_analysis.py not found at:\n{script}\n\n"
+                        "Make sure analysis/engagement_analysis.py exists in "
+                        "your project root.")
+
+                # Use unique module name to avoid importlib caching conflicts
+                spec = importlib.util.spec_from_file_location(
+                    "engagement_analysis_mod", script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+
+                summary, merged = mod.run_analysis(abs_folder)
+
+                self.root.after(0, lambda: self._on_analysis_done(
+                    abs_folder, summary, merged))
+
+            except Exception:
+                err = __import__('traceback').format_exc()
+                self.root.after(0, lambda: self._on_analysis_error(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_analysis_done(self, folder: str, summary: dict, merged):
+        """Called on main thread when analysis finishes."""
+        self._session_status_label.config(
+            text="✅ Analysis complete — outputs saved to analysis/ subfolder.",
+            foreground='#27ae60')
+
+        # Show summary stats in the results frame
+        self._clear_results()
+
+        # Title
+        ttk.Label(self.results_frame,
+                  text=f"Session: {os.path.basename(folder)}",
+                  font=('Helvetica', 12, 'bold')).pack(pady=(10, 2))
+        ttk.Label(self.results_frame,
+                  text=f"Duration: {summary['duration_s']:.1f}s  |  "
+                       f"{summary['total_frames']} frames  |  "
+                       f"{summary['effective_fps']} FPS",
+                  foreground='gray').pack(pady=(0, 10))
+
+        # Stats grid
+        stats_frame = ttk.Frame(self.results_frame)
+        stats_frame.pack(padx=20, pady=4)
+
+        rows = [
+            ("👁  Gaze on-screen",    f"{summary['gaze_on_screen_pct']:.1f}%"),
+            ("📏  Distance OK",        f"{summary['distance_ok_pct']:.1f}%"),
+            ("🔄  Facing forward",     f"{summary['facing_forward_pct']:.1f}%"),
+            ("🤸  Body engaged",       f"{summary['body_engaged_pct']:.1f}%"),
+            ("",                       ""),
+            ("🎯  Overall ENGAGED",   f"{summary['engaged_pct']:.1f}%"),
+            ("⚠   Overall DISENGAGED",f"{summary['disengaged_pct']:.1f}%"),
+            ("",                       ""),
+            ("Disengagement events",  str(summary['disengagement_events'])),
+            ("Avg disengagement dur", f"{summary['avg_disengagement_dur_s']:.2f}s"),
+            ("",                       ""),
+            ("📉 Mean engagement score",
+             f"{summary.get('mean_engagement_score', '—')}"),
+            ("   Min score",
+             f"{summary.get('min_engagement_score', '—')}"),
+            ("   Max score",
+             f"{summary.get('max_engagement_score', '—')}"),
+        ]
+
+        for i, (label, value) in enumerate(rows):
+            if not label:
+                ttk.Separator(stats_frame, orient='horizontal').grid(
+                    row=i, column=0, columnspan=2, sticky='ew', pady=4)
+                continue
+            colour = ('#27ae60' if 'ENGAGED' in label and 'DIS' not in label
+                      else '#c0392b' if 'DISENGAGED' in label else 'black')
+            ttk.Label(stats_frame, text=label,
+                      font=('Helvetica', 10, 'bold')).grid(
+                row=i, column=0, sticky='w', padx=(0, 20), pady=2)
+            ttk.Label(stats_frame, text=value,
+                      font=('Helvetica', 10), foreground=colour).grid(
+                row=i, column=1, sticky='w', pady=2)
+
+        # Quick-view: show engagement score inline after results
+        self._show_analysis_image('engagement_score.png', clear=False)
+
+    def _on_analysis_error(self, error: str):
+        """Called on main thread when analysis raises an exception."""
+        self._session_status_label.config(
+            text=f"❌ Analysis failed — see console for details.",
+            foreground='#c0392b')
+        messagebox.showerror("Analysis Error", error)
+
+    def _show_analysis_image(self, filename: str, clear: bool = True):
+        """Display one of the saved analysis PNG files in the results frame."""
+        folder = self._session_folder_var.get().strip()
+        if not folder:
+            messagebox.showwarning("Warning", "No session folder selected.")
+            return
+
+        img_path = os.path.join(folder, 'analysis', filename)
+        if not os.path.exists(img_path):
+            messagebox.showwarning(
+                "Not Found",
+                f"Image not found:\n{img_path}\n\nRun Full Analysis first.")
+            return
+
+        try:
+            from PIL import Image, ImageTk
+            if clear:
+                self._clear_results()
+
+            pil_img = Image.open(img_path)
+
+            # Scale image to fill the available results frame width.
+            # We read the actual frame width after layout; fall back to 1200
+            # if the frame hasn't been rendered yet.
+            self.results_frame.update_idletasks()
+            frame_w = self.results_frame.winfo_width()
+            if frame_w < 100:
+                frame_w = 1200
+
+            # Scale proportionally to frame width, no fixed height cap
+            orig_w, orig_h = pil_img.size
+            scale = frame_w / orig_w
+            new_w = int(orig_w * scale)
+            new_h = int(orig_h * scale)
+            pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+
+            tk_img = ImageTk.PhotoImage(pil_img)
+            label = ttk.Label(self.results_frame, image=tk_img)
+            label.image = tk_img   # keep reference to prevent GC
+            label.pack(pady=10, fill='x')
+
+        except ImportError:
+            # Pillow not installed — open in the OS default image viewer instead
+            import subprocess, platform
+            if platform.system() == 'Windows':
+                os.startfile(img_path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', img_path])
+            else:
+                subprocess.call(['xdg-open', img_path])
+
+            if clear:
+                self._clear_results()
+            ttk.Label(self.results_frame,
+                      text=f"Image opened in external viewer:\n{img_path}\n\n"
+                           "(Install Pillow for inline display: pip install Pillow)",
+                      foreground='gray').pack(pady=20)
+
+    # -----------------------------------------------------------------------
+    # Analysis tab — downloads
+    # -----------------------------------------------------------------------
+    def _download_session_xlsx(self):
+        """Export session data as a teacher-friendly Excel workbook."""
+        folder = self._session_folder_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Warning",
+                                   "Please select a session folder first.")
+            return
+
+        # Check analysis has been run
+        if not os.path.exists(os.path.join(folder, 'analysis',
+                                            'session_summary.json')):
+            messagebox.showwarning(
+                "Not Analysed",
+                "Please run Full Analysis on this session first.")
+            return
+
+        # Ask user where to save
+        session_label = os.path.basename(folder)
+        default_name  = f"ALPER_Report_{session_label}.xlsx"
+        save_path = filedialog.asksaveasfilename(
+            title="Save Session Report As",
+            defaultextension=".xlsx",
+            initialfile=default_name,
+            filetypes=[("Excel Workbook", "*.xlsx")])
+
+        if not save_path:
+            return
+
+        self._session_status_label.config(
+            text="⏳ Generating Excel report…", foreground='#e67e22')
+        self.root.update_idletasks()
+
+        def _worker():
+            try:
+                import importlib.util
+                here   = os.path.dirname(os.path.abspath(__file__))
+                script = os.path.normpath(
+                    os.path.join(here, '..', 'analysis', 'session_exporter.py'))
+
+                if not os.path.exists(script):
+                    raise FileNotFoundError(
+                        "session_exporter.py not found at: " + script)
+
+                spec = importlib.util.spec_from_file_location(
+                    "session_exporter_mod", script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+
+                abs_folder = os.path.abspath(folder)
+                out_path   = mod.export_session_xlsx(abs_folder, save_path)
+
+                self.root.after(0, lambda: self._on_xlsx_done(out_path))
+            except Exception:
+                err = __import__('traceback').format_exc()
+                self.root.after(0, lambda: self._on_xlsx_error(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_xlsx_done(self, path: str):
+        self._session_status_label.config(
+            text="✅ Excel report saved successfully.",
+            foreground='#27ae60')
+        if messagebox.askyesno("Download Complete",
+                               "Report saved to: " + path + "\n\nOpen it now?"):
+            import subprocess, platform
+            if platform.system() == 'Windows':
+                os.startfile(path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', path])
+            else:
+                subprocess.call(['xdg-open', path])
+
+    def _on_xlsx_error(self, error: str):
+        self._session_status_label.config(
+            text="❌ Export failed.", foreground='#c0392b')
+        messagebox.showerror("Export Error", error)
+
+    # -----------------------------------------------------------------------
+    # Analysis tab — multi-session comparison
+    # -----------------------------------------------------------------------
+    def _add_comparison_session(self):
+        """Add a session folder to the comparison list."""
+        here = os.path.dirname(os.path.abspath(__file__))
+        recordings_dir = os.path.normpath(
+            os.path.join(here, '..', 'recordings'))
+        if not os.path.isdir(recordings_dir):
+            recordings_dir = here
+
+        folder = filedialog.askdirectory(
+            title="Add Session to Comparison",
+            initialdir=recordings_dir)
+        if not folder:
+            return
+
+        # Guard against analysis subfolder
+        if os.path.basename(folder) == 'analysis':
+            folder = os.path.dirname(folder)
+
+        folder = os.path.abspath(folder)
+
+        # Check it has been analysed already
+        summary_path = os.path.join(folder, 'analysis', 'session_summary.json')
+        if not os.path.exists(summary_path):
+            messagebox.showwarning(
+                "Not Analysed",
+                "No analysis found for: " + os.path.basename(folder) + "\n\n"
+                "Run Full Analysis on this session first.")
+            return
+
+        # Prevent duplicates
+        if folder in self._comparison_folders:
+            messagebox.showinfo("Already Added",
+                                f"{os.path.basename(folder)} is already in the list.")
+            return
+
+        self._comparison_folders.append(folder)
+        self._comparison_listbox.insert('end', os.path.basename(folder))
+        n = len(self._comparison_folders)
+        self._comparison_status_label.config(
+            text=f"{n} session(s) added.  "
+                 f"{'Add at least one more to compare.' if n < 2 else 'Ready to compare.'}",
+            foreground='black' if n >= 2 else 'gray')
+
+    def _clear_comparison_sessions(self):
+        """Clear the comparison session list."""
+        self._comparison_folders.clear()
+        self._comparison_listbox.delete(0, 'end')
+        self._comparison_output_dir = None
+        self._comparison_status_label.config(
+            text="Add at least 2 analysed sessions to compare.",
+            foreground='gray')
+
+    def _run_comparison(self):
+        """Run multi-session comparison in a background thread."""
+        if len(self._comparison_folders) < 2:
+            messagebox.showwarning(
+                "Not Enough Sessions",
+                "Please add at least 2 sessions to compare.")
+            return
+
+        self._comparison_status_label.config(
+            text="⏳ Running comparison… please wait.",
+            foreground='#e67e22')
+        self.root.update_idletasks()
+
+        folders = list(self._comparison_folders)
+
+        def _worker():
+            try:
+                import importlib.util, traceback as _tb
+
+                here = os.path.dirname(os.path.abspath(__file__))
+                script = os.path.normpath(
+                    os.path.join(here, '..', 'analysis',
+                                 'multi_session_comparison.py'))
+
+                if not os.path.exists(script):
+                    raise FileNotFoundError(
+                        f"multi_session_comparison.py not found at: {script}")
+
+                spec = importlib.util.spec_from_file_location(
+                    "multi_session_comparison_mod", script)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+
+                # Save comparison output next to the recordings folder
+                parent = os.path.dirname(folders[0])
+                out_dir = os.path.join(parent, 'comparison')
+
+                sessions, out_dir = mod.run_comparison(folders, out_dir)
+                self.root.after(0, lambda: self._on_comparison_done(
+                    sessions, out_dir))
+
+            except Exception:
+                err = __import__('traceback').format_exc()
+                self.root.after(0, lambda: self._on_comparison_error(err))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_comparison_done(self, sessions: list, out_dir: str):
+        """Called on main thread when comparison finishes."""
+        self._comparison_output_dir = out_dir
+        n = len(sessions)
+        self._comparison_status_label.config(
+            text=f"✅ Comparison complete — {n} sessions — outputs in comparison/",
+            foreground='#27ae60')
+
+        # Show comparison table in results frame
+        self._clear_results()
+
+        ttk.Label(self.results_frame,
+                  text=f"Session Comparison — {n} Sessions",
+                  font=('Helvetica', 12, 'bold')).pack(pady=(10, 6))
+
+        # Stats table
+        tbl = ttk.Frame(self.results_frame)
+        tbl.pack(padx=20, pady=4)
+
+        headers = ['Session', 'Score', 'Engaged%', 'Gaze%', 'Facing%',
+                   'Dist%', 'Events']
+        for col, h in enumerate(headers):
+            ttk.Label(tbl, text=h, font=('Helvetica', 9, 'bold'),
+                      width=12, anchor='center').grid(
+                row=0, column=col, padx=4, pady=2)
+
+        for row_i, s in enumerate(sessions, start=1):
+            sm = s['summary']
+            vals = [
+                s['label'][:14],
+                f"{sm.get('mean_engagement_score','—')}",
+                f"{sm.get('engaged_pct','—')}%",
+                f"{sm.get('gaze_on_screen_pct','—')}%",
+                f"{sm.get('facing_forward_pct','—')}%",
+                f"{sm.get('distance_ok_pct','—')}%",
+                str(sm.get('disengagement_events','—')),
+            ]
+            bg = '#f0fff4' if row_i % 2 == 0 else 'white'
+            for col, val in enumerate(vals):
+                ttk.Label(tbl, text=val, width=12,
+                          anchor='center').grid(
+                    row=row_i, column=col, padx=4, pady=1)
+
+        # Auto-show score bars plot
+        self._show_comparison_image('comparison_scores.png', clear=False)
+
+    def _on_comparison_error(self, error: str):
+        self._comparison_status_label.config(
+            text="❌ Comparison failed — see console for details.",
+            foreground='#c0392b')
+        messagebox.showerror("Comparison Error", error)
+
+    def _show_comparison_image(self, filename: str, clear: bool = True):
+        """Display a comparison plot in the results frame."""
+        if not self._comparison_output_dir:
+            messagebox.showwarning("Warning",
+                                   "Run comparison first.")
+            return
+        img_path = os.path.join(self._comparison_output_dir, filename)
+        if not os.path.exists(img_path):
+            messagebox.showwarning("Not Found",
+                                   "Image not found: " + img_path + "\n\n"
+                                   "Run comparison first.")
+            return
+        # Reuse the same image display logic as single-session
+        self._session_folder_var.set('')   # temp blank so _show_analysis_image
+                                           # won't complain about no folder
+        try:
+            from PIL import Image, ImageTk
+            if clear:
+                self._clear_results()
+
+            pil_img = Image.open(img_path)
+            self.results_frame.update_idletasks()
+            frame_w = self.results_frame.winfo_width()
+            if frame_w < 100:
+                frame_w = 1200
+            orig_w, orig_h = pil_img.size
+            scale = frame_w / orig_w
+            pil_img = pil_img.resize(
+                (int(orig_w * scale), int(orig_h * scale)), Image.LANCZOS)
+            tk_img = ImageTk.PhotoImage(pil_img)
+            lbl = ttk.Label(self.results_frame, image=tk_img)
+            lbl.image = tk_img
+            lbl.pack(pady=10, fill='x')
+        except ImportError:
+            import subprocess, platform
+            if platform.system() == 'Windows':
+                os.startfile(img_path)
+            elif platform.system() == 'Darwin':
+                subprocess.call(['open', img_path])
+            else:
+                subprocess.call(['xdg-open', img_path])
 
     # -----------------------------------------------------------------------
     # Analysis tab — data loading and visualisation

@@ -1,82 +1,239 @@
-# 🧠 ALPER-EU
+# ALPER-EU — Multimodal Engagement Analysis System
 
-Research project integrating **eye-tracking** and **body-tracking** technologies to capture and analyze human gaze and movement data.  
-Combines **Tobii** and **Intel RealSense** systems with **Python** for real-time data collection, synchronization, and visualization.
+> **Thesis project** — Electronic Engineering MEng  
+> Part of the **ALPER EU** (Agile Learning of Programming with Educational Robotics) research project.
 
----
-
-# 👁️ Eye Tracking Analysis Dashboard
-
-A modern Python desktop application for real-time gaze tracking, visualization, and data analysis using **Tobii eye-tracking sensors**.
+A Python desktop application that monitors student attention and behaviour during educational robotics learning sessions. It captures synchronised eye-gaze and body-skeleton data from two sensors, records structured datasets, and computes engagement metrics for post-session analysis.
 
 ---
 
-## 🧩 Overview
+## Hardware Requirements
 
-This app connects to a local Tobii Stream service and provides a live visualization of gaze points on screen, as well as multiple post-tracking analysis tools including heatmaps, space maps, attention metrics, and presence analysis.
-
-It is built using **Python**, **Tkinter**, **ZeroMQ**, **Pandas**, **NumPy**, and **Matplotlib**.
-
----
-
-## ⚙️ Features
-
-### 🎯 Live Tracking
-- Connects automatically to Tobii stream (`tcp://127.0.0.1:5556`)
-- Displays gaze coordinates in real time
-- Saves all captured samples to a CSV file
-- Smooth visualization at ~30 FPS
-
-### 🔥 Data Analysis Tools
-- **Heatmap** — visualize gaze density across the screen  
-- **Space Map** — scatter plot of all gaze points  
-- **Attention Analysis** — detect reading, scanning, and idle intervals  
-- **Presence Analysis** — calculate total on-screen presence percentage  
-
-### 💾 Data Handling
-- Automatic timestamped CSV export  
-- Simple CSV import for post-session analysis  
-- Handles missing or invalid data gracefully  
+| Device | Purpose |
+|--------|---------|
+| **Tobii Eye Tracker 4C** | Gaze coordinates, eye position, attention direction |
+| **Intel RealSense D455** | Depth video, body skeleton tracking, 3D joint coordinates |
 
 ---
 
-## 🖥️ Interface
+## System Architecture
 
-The application contains two main tabs:
-
-| Tab | Description |
-|------|--------------|
-| **Live Tracking** | Start/stop Tobii data capture and visualize gaze points in real time. |
-| **Data Analysis** | Load existing CSV data and perform analytical visualizations (heatmap, attention timeline, etc.). |
-
----
-
-## 📦 Installation
-
-### 1️⃣ Requirements
-Make sure you have:
-- Python 3.10 or newer  
-- Official **Tobii drivers**  
-- `tobiistream` running locally (port `5556`)  
-
-### 2️⃣ Install dependencies
-```bash
-pip install pyzmq pandas numpy matplotlib
+```
+ALPER-EU/
+├── MainApp.py                        ← Single entry point — unified GUI
+├── Gaze APP Python/
+│   └── GazeAppAlpha.py               ← Tobii gaze tracking + analysis tab
+├── RealSenseBodyTracker/
+│   └── body-tracker.py               ← RealSense body tracking engine
+├── analysis/
+│   ├── engagement_analysis.py        ← Post-session engagement analysis
+│   ├── multi_session_comparison.py   ← Multi-session comparison plots
+│   └── session_exporter.py           ← Excel report generator
+└── recordings/
+    └── both_YYYYMMDD_HHMMSS/         ← One folder per session
+        ├── tobii_gaze.csv
+        ├── upper_body.csv
+        ├── hands_data.csv
+        ├── realsense_color.avi
+        ├── session_metadata.json
+        └── analysis/
+            ├── session_summary.json
+            ├── engagement_merged.csv
+            ├── engagement_score.csv
+            ├── disengagement_events.csv
+            ├── engagement_timeline.png
+            ├── gaze_heatmap.png
+            ├── signal_summary.png
+            ├── engagement_score.png
+            └── session_report.xlsx
 ```
 
-### 3️⃣ Run the application
-python GazeAnalysisApp.py
+---
 
-### 📁 Data Format
-CSV columns used by the app:
-timestamp, x, y
-- timestamp — milliseconds since stream start
-- x, y — gaze coordinates within screen bounds (0–1920 × 0–1080)
+## Installation
 
-### 🚀 Quick Start
-Tkinter desktop app that subscribes to TobiiStream (ZeroMq), records gaze data, and provides heatmaps and attention/presence analysis.
+### 1. Python and dependencies
 
+Python 3.10 or newer is required.
 
-1) Ensure TobiiStream on tcp://127.0.0.1:5556 is running
-2) `python GazeAppAlpha.py`
-3) Use the app to track, save CSV, and analyze
+```bash
+pip install pyzmq pandas numpy matplotlib scipy opencv-python mediapipe pyrealsense2 Pillow openpyxl
+```
+
+### 2. Tobii driver and stream service
+
+- Install the official Tobii Eye Tracker software and drivers.
+- The Tobii stream service must be running on `tcp://127.0.0.1:5556` before launching the application.
+
+### 3. Intel RealSense SDK
+
+- Install the [Intel RealSense SDK 2.0](https://github.com/IntelRealSense/librealsense) for your platform.
+- `pyrealsense2` is the Python wrapper, installed via pip above.
+
+---
+
+## Running the Application
+
+```bash
+python MainApp.py
+```
+
+This opens a single unified window with three tabs.
+
+---
+
+## GUI Tabs
+
+### 🎬 Session Control
+
+The primary recording interface.
+
+- **Start BOTH** — starts eye and body sensors simultaneously. A session metadata dialog appears first (Student ID, Task Name, Facilitator, Notes). Use **Guest / Skip** for demos and tests.
+- **Start Eye Only / Start Body Only** — run a single sensor independently.
+- **Countdown** — configurable delay (0–60 s). Both sensors enter preview mode immediately; recording begins after the countdown so the student is settled.
+- **Live Engagement Monitor** — four real-time indicators update every 200 ms:
+  - 👁 Gaze on screen
+  - 📏 Within distance
+  - 🔄 Facing forward
+  - ⏱ Session time elapsed
+  - 🎯 Overall engagement verdict (disengaged only when all three signals fail simultaneously)
+- **Verification panel** — shown after recording stops; confirms row counts, estimated FPS, and video file size for all four output files.
+
+### 👁 Live Tracking
+
+The Tobii gaze tracking interface. Shows a live gaze dot on a miniature screen canvas, current gaze coordinates, on/off-screen status, cumulative on/off-screen time percentages, and a configurable session timer with optional countdown.
+
+Sampling rate is selectable from 30 to 90 FPS. When running in synchronised mode with the body tracker, the system locks to **30 FPS** to match the RealSense frame rate.
+
+### 📊 Data Analysis
+
+Post-session analysis tools. Select a session folder and click **Run Full Analysis** to generate all outputs. Individual plots can be displayed inline. An Excel report can be downloaded for teachers.
+
+Multi-session comparison: add two or more analysed sessions to produce side-by-side score bars, signal breakdowns, and overlaid engagement score curves.
+
+---
+
+## Data Collection
+
+### Synchronisation
+
+Both sensors share a common `epoch_ms` timestamp (milliseconds since Unix epoch) computed from `time.time_ns()`. A shared `go_epoch_ms` gate is calculated before the countdown begins and passed to both recording engines. Neither sensor writes to its CSV until wall-clock time reaches this gate value, ensuring both datasets start at the same absolute moment.
+
+Gaze and body data are merged during analysis using `pandas.merge_asof` with a 50 ms tolerance.
+
+### Output files per session
+
+| File | Sensor | Rate | Contents |
+|------|--------|------|----------|
+| `tobii_gaze.csv` | Tobii 4C | 30 FPS (sync) / up to 90 FPS (standalone) | `epoch_ms`, `x`, `y`, `on_screen` |
+| `upper_body.csv` | RealSense | 30 FPS | `epoch_ms`, `device_ms`, Nose X/Y/dist, L/R Shoulder X/Y/dist, `Distance_OK`, `Facing_Forward`, `Body_Engaged` |
+| `hands_data.csv` | RealSense | 30 FPS | `epoch_ms`, `device_ms`, `Fingers_Detected`, `Hand_Count` |
+| `realsense_color.avi` | RealSense | 30 FPS | Annotated RGB video (1280 × 720, XVID) |
+| `session_metadata.json` | GUI | — | Student ID, task name, facilitator, notes, timestamp |
+
+---
+
+## Engagement Model
+
+### Three-signal rule
+
+A student is considered **disengaged** only when all three conditions fail simultaneously:
+
+- Gaze is **off-screen**
+- Distance is **outside threshold** (default 0.70 m, adjustable via slider)
+- Student is **not facing forward** (shoulder rotation score ≥ threshold)
+
+In all other cases the student is considered **engaged**. This conservative rule avoids false disengagement when a student glances at a robot, types on a keyboard, or briefly looks away.
+
+### Engagement score (0–100)
+
+A weighted score is computed per frame and smoothed over a 3-second rolling window:
+
+```
+score = (gaze_on_screen × 0.50 + facing_forward × 0.30 + distance_ok × 0.20) × 100
+```
+
+| Zone | Score | Interpretation |
+|------|-------|----------------|
+| High | ≥ 80 | Strongly engaged |
+| Moderate | 50–79 | Partially engaged |
+| Low | < 50 | At risk of disengagement |
+
+### Body orientation detection
+
+Facing-forward status is determined by a three-cue rotation score:
+
+1. **Shoulder width ratio** — current width vs calibrated baseline (score +1 if < 75 %)
+2. **Depth asymmetry** — difference in depth between left and right shoulder (score +1 if > 10 cm)
+3. **Height asymmetry** — vertical position difference between shoulders (score +1 if > 3 %)
+
+If the total score reaches the turn threshold (default 2), the student is classified as turned away.
+
+---
+
+## Analysis Pipeline
+
+Run manually from the terminal or via the GUI **Run Full Analysis** button.
+
+```bash
+python analysis/engagement_analysis.py recordings/both_YYYYMMDD_HHMMSS
+```
+
+Outputs saved to `recordings/both_YYYYMMDD_HHMMSS/analysis/`:
+
+| Output | Description |
+|--------|-------------|
+| `session_summary.json` | All metrics in machine-readable format |
+| `engagement_merged.csv` | Per-frame merged gaze + body data with engagement verdict |
+| `engagement_score.csv` | Per-second score, smoothed score, and individual signal means |
+| `disengagement_events.csv` | Each disengagement episode with start, end, and duration |
+| `engagement_timeline.png` | Four-row colour band timeline (gaze / distance / facing / verdict) |
+| `gaze_heatmap.png` | Gaussian-smoothed gaze density map on a 1920 × 1200 canvas |
+| `signal_summary.png` | Bar chart of % time each condition was true |
+| `engagement_score.png` | Smoothed score over time with zone shading and signal traces |
+
+### Multi-session comparison
+
+```bash
+python analysis/multi_session_comparison.py recordings/both_* --output recordings/comparison
+```
+
+Produces `comparison_scores.png`, `comparison_signals.png`, `comparison_curves.png`, and `comparison_table.csv` in the output directory.
+
+### Excel teacher report
+
+```bash
+python analysis/session_exporter.py recordings/both_YYYYMMDD_HHMMSS
+```
+
+Generates `session_report.xlsx` with five sheets: Session Report, Engagement Summary, Gaze Data, Body Data, Disengagement Events.
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `pyzmq` | ZeroMQ socket for Tobii stream |
+| `pyrealsense2` | Intel RealSense SDK Python wrapper |
+| `mediapipe` | Body pose and hand landmark detection |
+| `opencv-python` | Camera frames, video recording, preview window |
+| `pandas` | CSV loading and timestamp merging |
+| `numpy` | Numerical operations |
+| `matplotlib` | All analysis plots |
+| `scipy` | Gaussian filter for heatmaps |
+| `Pillow` | Inline image display in the GUI |
+| `openpyxl` | Excel report generation |
+| `tkinter` | GUI (included with Python standard library) |
+
+---
+
+## Key Design Decisions
+
+**Why ZeroMQ for Tobii?** The Tobii 4C publishes gaze data over a local TCP socket via the TobiiStream service. ZeroMQ provides a clean non-blocking SUB socket interface without polling, with a 500 ms silence threshold to detect device disconnection.
+
+**Why MediaPipe Complexity 0?** The lightest pose model (`model_complexity=0`) is used to keep body tracking within the 33 ms frame budget at 30 FPS. Shoulder and nose visibility is sufficient for the distance and orientation signals needed by the engagement model.
+
+**Why XVID for video?** XVID (AVI container) is widely supported on Windows without additional codec installation, produces manageable file sizes at 30 FPS / 1280 × 720, and does not require FFmpeg.
+
+**Why conservative disengagement rule?** Educational robotics tasks naturally cause students to look away from the screen (at the robot, at a worksheet, at a peer). Triggering disengagement on a single off-screen gaze would produce many false positives. The all-three-false rule produces a meaningful signal that correlates with genuine task abandonment.

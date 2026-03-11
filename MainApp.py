@@ -33,6 +33,184 @@ BodyTrackerEngine = body_tracker_module.BodyTrackerEngine
 
 
 # ---------------------------------------------------------------------------
+# Session Metadata Dialog
+# ---------------------------------------------------------------------------
+class SessionMetadataDialog(tk.Toplevel):
+    """
+    Modal dialog shown before any recording starts.
+
+    Two paths:
+      - 'Guest / Skip'   → starts recording immediately with no metadata required
+      - Fill form + '▶ Start Recording' → validates Student ID + Task Name, then proceeds
+      - 'Cancel'         → recording does not start
+
+    After the dialog closes check:
+        dialog.submitted  — True if user confirmed (form OR guest)
+        dialog.metadata   — dict with the collected fields
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("Session Details")
+        self.resizable(False, False)
+        self.grab_set()       # modal — blocks interaction with parent
+        self.focus_force()
+
+        self.submitted = False
+        self.metadata  = {}
+
+        self._build()
+
+        # Centre over parent window
+        self.update_idletasks()
+        pw = parent.winfo_x() + parent.winfo_width()  // 2
+        ph = parent.winfo_y() + parent.winfo_height() // 2
+        w  = self.winfo_width()
+        h  = self.winfo_height()
+        self.geometry(f"+{pw - w//2}+{ph - h//2}")
+
+        # Block until dialog closes
+        parent.wait_window(self)
+
+    # ------------------------------------------------------------------
+    def _build(self):
+        ttk.Label(self, text="ALPER-EU — New Recording Session",
+                  font=('Helvetica', 12, 'bold')).pack(pady=(16, 4), padx=24)
+        ttk.Label(self,
+                  text="Fill in the details, or click  👤 Guest / Skip  to start immediately.",
+                  foreground='gray', font=('Helvetica', 9)).pack(pady=(0, 12), padx=24)
+
+        form = ttk.Frame(self)
+        form.pack(fill='x', padx=24, pady=4)
+
+        # (label_text, placeholder, required)
+        fields = [
+            ("Student ID *",   "e.g.  S01",             True),
+            ("Task Name *",    "e.g.  Robot Assembly",  True),
+            ("Facilitator",    "Teacher / researcher",  False),
+            ("Session Notes",  "Optional notes…",       False),
+        ]
+
+        self._vars    = {}
+        self._entries = {}
+
+        for i, (label, placeholder, required) in enumerate(fields):
+            ttk.Label(form, text=label,
+                      font=('Helvetica', 10,
+                            'bold' if required else 'normal')
+                      ).grid(row=i, column=0, sticky='w', pady=6, padx=(0, 12))
+
+            var   = tk.StringVar()
+            entry = ttk.Entry(form, textvariable=var, width=36)
+            entry.grid(row=i, column=1, sticky='ew', pady=6)
+
+            # Grey placeholder text
+            entry.insert(0, placeholder)
+            entry.config(foreground='gray')
+
+            def _on_in(e, v=var, ph=placeholder, w=entry):
+                if v.get() == ph:
+                    w.delete(0, 'end')
+                    w.config(foreground='black')
+
+            def _on_out(e, v=var, ph=placeholder, w=entry):
+                if not v.get().strip():
+                    w.insert(0, ph)
+                    w.config(foreground='gray')
+
+            entry.bind('<FocusIn>',  _on_in)
+            entry.bind('<FocusOut>', _on_out)
+
+            key = label.replace(' *', '').lower().replace(' ', '_')
+            self._vars[key]    = (var, placeholder)
+            self._entries[key] = entry
+
+        form.columnconfigure(1, weight=1)
+
+        self._error_label = ttk.Label(self, text='', foreground='#c0392b',
+                                      font=('Helvetica', 9))
+        self._error_label.pack(pady=(4, 0))
+
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(pady=(12, 18), padx=24)
+
+        # Guest button — leftmost and widest, most prominent for demos/testing
+        ttk.Button(btn_frame,
+                   text="👤  Guest / Skip",
+                   command=self._on_guest,
+                   width=18).pack(side='left', padx=(0, 20))
+
+        ttk.Button(btn_frame,
+                   text="▶  Start Recording",
+                   command=self._on_submit,
+                   width=18).pack(side='left', padx=(0, 8))
+
+        ttk.Button(btn_frame,
+                   text="Cancel",
+                   command=self._on_cancel,
+                   width=10).pack(side='left')
+
+    # ------------------------------------------------------------------
+    def _get(self, key):
+        var, placeholder = self._vars[key]
+        val = var.get().strip()
+        return '' if val == placeholder else val
+
+    def _on_submit(self):
+        student_id = self._get('student_id')
+        task_name  = self._get('task_name')
+        if not student_id:
+            self._error_label.config(text="⚠  Student ID is required.")
+            self._entries['student_id'].focus_set()
+            return
+        if not task_name:
+            self._error_label.config(text="⚠  Task Name is required.")
+            self._entries['task_name'].focus_set()
+            return
+        self.metadata = {
+            'student_id':  student_id,
+            'task_name':   task_name,
+            'facilitator': self._get('facilitator'),
+            'notes':       self._get('session_notes'),
+            'guest':       False,
+            'recorded_at': datetime.now().isoformat(),
+        }
+        self.submitted = True
+        self.destroy()
+
+    def _on_guest(self):
+        self.metadata = {
+            'student_id':  'GUEST',
+            'task_name':   'Demo / Test',
+            'facilitator': '',
+            'notes':       '',
+            'guest':       True,
+            'recorded_at': datetime.now().isoformat(),
+        }
+        self.submitted = True
+        self.destroy()
+
+    def _on_cancel(self):
+        self.submitted = False
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
+# Metadata save helper
+# ---------------------------------------------------------------------------
+def _save_session_metadata(folder: str, metadata: dict) -> None:
+    """Write session_metadata.json into the session folder."""
+    import json
+    path = os.path.join(folder, 'session_metadata.json')
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(metadata, f, indent=2)
+        print(f"[META] Saved: {path}")
+    except Exception as e:
+        print(f"[META] Warning — could not save metadata: {e}")
+
+
+# ---------------------------------------------------------------------------
 # MainController — single unified window
 # ---------------------------------------------------------------------------
 class MainController:
@@ -62,6 +240,7 @@ class MainController:
         # Engagement poll after-ID — initialised before _build_ui so the
         # panel can reference it; actual widget is created inside _build_session_tab
         self._engagement_poll_id = None
+        self._session_start_time: float | None = None   # set when recording begins
 
         self._build_ui()
 
@@ -225,21 +404,28 @@ class MainController:
                                    relief='solid', anchor='center')
         self.ind_face.grid(row=2, column=1, sticky='w', pady=3)
 
+        ttk.Label(eg, text="⏱  Session time:",
+                  font=('Helvetica', 10, 'bold')).grid(row=3, column=0, sticky='w', padx=(0, 10))
+        self.ind_time = ttk.Label(eg, text="—", width=18,
+                                   font=('Helvetica', 10, 'bold'), foreground='gray',
+                                   relief='solid', anchor='center')
+        self.ind_time.grid(row=3, column=1, sticky='w', pady=3)
+
         ttk.Separator(eg, orient='horizontal').grid(
-            row=3, column=0, columnspan=3, sticky='ew', pady=8)
+            row=4, column=0, columnspan=3, sticky='ew', pady=8)
 
         # Combined engagement verdict — large and prominent
         ttk.Label(eg, text="🎯  Student engaged:",
-                  font=('Helvetica', 12, 'bold')).grid(row=4, column=0, sticky='w', padx=(0, 10))
+                  font=('Helvetica', 12, 'bold')).grid(row=5, column=0, sticky='w', padx=(0, 10))
         self.ind_engaged = ttk.Label(eg, text="NOT MONITORING", width=22,
                                       font=('Helvetica', 12, 'bold'), foreground='gray',
                                       relief='solid', anchor='center')
-        self.ind_engaged.grid(row=4, column=1, sticky='w', pady=3)
+        self.ind_engaged.grid(row=5, column=1, sticky='w', pady=3)
 
         ttk.Label(eg,
                   text="(Disengaged only if ALL THREE signals are False simultaneously)",
                   foreground='gray', font=('Helvetica', 8)).grid(
-            row=5, column=0, columnspan=3, sticky='w', pady=(4, 0))
+            row=6, column=0, columnspan=3, sticky='w', pady=(4, 0))
 
         outer.columnconfigure(0, weight=1)
 
@@ -286,16 +472,23 @@ class MainController:
         folder = os.path.join('recordings', f"{mode}_{ts}")
         os.makedirs(folder, exist_ok=True)
         self.session_folder = folder
-        self.folder_label.config(
-            text=folder, foreground='black')
+        self.folder_label.config(text=folder, foreground='black')
+        # Expose to GazeAnalysisApp analysis tab so "Use Last Session" works
+        self.root._last_session_folder = folder
         return folder
 
     # -----------------------------------------------------------------------
     # Start / Stop — BOTH
     # -----------------------------------------------------------------------
     def start_both(self):
+        # Show metadata dialog — recording only starts if user confirms
+        dlg = SessionMetadataDialog(self.root)
+        if not dlg.submitted:
+            return
+
         secs = int(self.countdown_var.get())
         folder = self._make_session_folder('both')
+        _save_session_metadata(folder, dlg.metadata)
         go_epoch_ms = epoch_ms() + secs * 1000
 
         self._set_buttons_recording('both')
@@ -320,7 +513,6 @@ class MainController:
             gaze_csv = os.path.join(folder, 'tobii_gaze.csv')
             try:
                 self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=30)
-                # FIX 1: Reset gaze timers HERE (after countdown) not at preview start
                 self.gaze_app.reset_gaze_timers()
                 self.eye_status.config(text='Recording ●')
             except Exception as e:
@@ -331,6 +523,7 @@ class MainController:
             except Exception as e:
                 print(f'[ERROR] Body recording: {e}')
             self.unified_status.config(text='Recording ● BOTH sensors active')
+            self._session_start_time = time.time()
             self._start_engagement_poll()
 
         self._run_countdown(secs, go)
@@ -358,8 +551,13 @@ class MainController:
     # Start / Stop — Eye only
     # -----------------------------------------------------------------------
     def start_eye_only(self):
+        dlg = SessionMetadataDialog(self.root)
+        if not dlg.submitted:
+            return
+
         secs = int(self.countdown_var.get())
         folder = self._make_session_folder('eye')
+        _save_session_metadata(folder, dlg.metadata)
         go_epoch_ms = epoch_ms() + secs * 1000
 
         self._set_buttons_recording('eye')
@@ -377,10 +575,10 @@ class MainController:
             gaze_csv = os.path.join(folder, 'tobii_gaze.csv')
             try:
                 self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=30)
-                # FIX 1: Reset gaze timers after countdown
                 self.gaze_app.reset_gaze_timers()
                 self.eye_status.config(text='Recording ●')
                 self.unified_status.config(text='Recording ● Eye only')
+                self._session_start_time = time.time()
                 self._start_engagement_poll()
             except Exception as e:
                 print(f'[ERROR] Gaze recording: {e}')
@@ -403,8 +601,13 @@ class MainController:
     # Start / Stop — Body only
     # -----------------------------------------------------------------------
     def start_body_only(self):
+        dlg = SessionMetadataDialog(self.root)
+        if not dlg.submitted:
+            return
+
         secs = int(self.countdown_var.get())
         folder = self._make_session_folder('body')
+        _save_session_metadata(folder, dlg.metadata)
         go_epoch_ms = epoch_ms() + secs * 1000
 
         self._set_buttons_recording('body')
@@ -423,6 +626,7 @@ class MainController:
                 self.body_engine.start_recording(folder, go_epoch_ms)
                 self.body_status.config(text='Recording ●')
                 self.unified_status.config(text='Recording ● Body only')
+                self._session_start_time = time.time()
                 self._start_engagement_poll()
             except Exception as e:
                 print(f'[ERROR] Body recording: {e}')
@@ -448,15 +652,18 @@ class MainController:
         if not self.session_folder:
             return
 
-        files = {
-            'Eye CSV (tobii_gaze.csv)':   os.path.join(self.session_folder, 'tobii_gaze.csv'),
-            'Body CSV (upper_body.csv)':  os.path.join(self.session_folder, 'upper_body.csv'),
+        lines = []
+
+        # ── CSV files: check row count and estimate FPS ──────────────────────
+        csv_files = {
+            'Eye CSV (tobii_gaze.csv)':  os.path.join(self.session_folder, 'tobii_gaze.csv'),
+            'Body CSV (upper_body.csv)': os.path.join(self.session_folder, 'upper_body.csv'),
+            'Hands CSV (hands_data.csv)':os.path.join(self.session_folder, 'hands_data.csv'),
         }
 
-        lines = []
-        for label, path in files.items():
+        for label, path in csv_files.items():
             if not os.path.exists(path):
-                lines.append(f"  {label}: file not found")
+                lines.append(f"  ✗ {label}: file not found")
                 continue
             try:
                 with open(path, 'r', newline='') as f:
@@ -472,7 +679,7 @@ class MainController:
                                 pass
 
                 if row_count < 10:
-                    lines.append(f"  ⚠ {label}: only {row_count} rows")
+                    lines.append(f"  ⚠ {label}: only {row_count} rows — recording may be too short")
                     continue
 
                 if len(timestamps) >= 2:
@@ -488,14 +695,23 @@ class MainController:
             except Exception as e:
                 lines.append(f"  ✗ {label}: {e}")
 
+        # ── Video file: check exists and has non-zero size ────────────────────
+        video_path = os.path.join(self.session_folder, 'realsense_color.avi')
+        if not os.path.exists(video_path):
+            lines.append("  ✗ Video (realsense_color.avi): file not found")
+        else:
+            size_mb = os.path.getsize(video_path) / (1024 * 1024)
+            if size_mb < 0.01:
+                lines.append(f"  ⚠ Video (realsense_color.avi): exists but very small ({size_mb:.2f} MB)")
+            else:
+                lines.append(f"  ✓ Video (realsense_color.avi): {size_mb:.1f} MB")
+
         result_text = "\n".join(lines) if lines else "No files found."
         self.verify_label.config(text=result_text, foreground='black')
 
-        # Also print to console as before
         print(f"\n[VERIFY] Session: {self.session_folder}")
         for line in lines:
             print(f"[VERIFY]{line}")
-
 
     # -----------------------------------------------------------------------
     # Engagement polling — reads live_state from both sensors every 200ms
@@ -518,29 +734,18 @@ class MainController:
 
     def _reset_engagement_display(self):
         """Grey out all indicators when not monitoring."""
-        for widget in (self.ind_gaze, self.ind_dist, self.ind_face, self.ind_engaged):
+        for widget in (self.ind_gaze, self.ind_dist, self.ind_face,
+                       self.ind_time, self.ind_engaged):
             widget.config(text="—", foreground="gray")
+        self._session_start_time = None
 
     def _poll_engagement(self):
-        """Read live state from both sensors and update the engagement display.
-
-        Runs on the Tkinter main thread every 200ms via root.after().
-        Reading simple bool/None values from dicts is GIL-safe in CPython.
-
-        Engagement rule:
-            DISENGAGED  = gaze_on_screen is False
-                          AND distance_ok is False
-                          AND facing_forward is False
-            In all other cases the student is considered ENGAGED — they may be
-            typing, working on a robot, or looking at materials off-screen.
-        """
+        """Read live state from both sensors and update the engagement display."""
         try:
-            # --- Read gaze state ---
             gaze_on = None
             if self.gaze_app is not None:
                 gaze_on = self.gaze_app.gaze_on_screen
 
-            # --- Read body state ---
             dist_ok   = None
             facing_fw = None
             body_eng  = None
@@ -549,7 +754,6 @@ class MainController:
                 facing_fw = self.body_engine.live_state.get("facing_forward")
                 body_eng  = self.body_engine.live_state.get("body_engaged")
 
-            # --- Update individual signal indicators ---
             self._update_indicator(self.ind_gaze, gaze_on,
                                    true_text="ON-SCREEN ✓",
                                    false_text="OFF-SCREEN ✗")
@@ -560,14 +764,11 @@ class MainController:
                                    true_text="FORWARD ✓",
                                    false_text="TURNED ✗")
 
-            # --- Compute combined engagement verdict ---
             any_none = any(v is None for v in (gaze_on, dist_ok, facing_fw))
 
             if any_none:
-                # Sensors not fully active yet
                 self.ind_engaged.config(text="WAITING…", foreground="gray")
             else:
-                # Disengaged only if ALL THREE are False
                 all_false = (gaze_on is False
                              and dist_ok is False
                              and facing_fw is False)
@@ -583,12 +784,21 @@ class MainController:
         except Exception as e:
             print(f"[WARN] Engagement poll error: {e}")
 
-        # Reschedule at 200ms — fast enough for live monitoring, light enough
-        # not to impact the Tkinter event loop
+        # --- Session timer indicator ---
+        if self._session_start_time is not None:
+            elapsed = time.time() - self._session_start_time
+            h = int(elapsed // 3600)
+            m = int((elapsed % 3600) // 60)
+            s = int(elapsed % 60)
+            time_str = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+            self.ind_time.config(text=time_str, foreground="#2c3e50", background="")
+        else:
+            self.ind_time.config(text="—", foreground="gray", background="")
+
         self._engagement_poll_id = self.root.after(200, self._poll_engagement)
 
     @staticmethod
-    def _update_indicator(label: tk.Label, value: bool | None,
+    def _update_indicator(label: tk.Label, value,
                           true_text: str, false_text: str):
         """Update a single signal indicator label with colour coding."""
         if value is None:
