@@ -5,7 +5,7 @@
 
 A Python desktop application that monitors student attention and behaviour during educational robotics learning sessions. It captures synchronised eye-gaze and body-skeleton data from two sensors, records structured datasets, and computes engagement metrics for post-session analysis.
 
--
+---
 
 ## Hardware Requirements
 
@@ -14,7 +14,7 @@ A Python desktop application that monitors student attention and behaviour durin
 | **Tobii Eye Tracker 4C** | Gaze coordinates, eye position, attention direction |
 | **Intel RealSense D455** | Depth video, body skeleton tracking, 3D joint coordinates |
 
--
+---
 
 ## System Architecture
 
@@ -48,7 +48,7 @@ ALPER-EU/
             - session_report.xlsx
 ```
 
--
+---
 
 ## Installation
 
@@ -98,7 +98,7 @@ python MainApp.py
 
 This opens a single unified window with three tabs.
 
--
+---
 
 ## GUI Tabs
 
@@ -129,7 +129,7 @@ Post-session analysis tools. Select a session folder and click **Run Full Analys
 
 Multi-session comparison: add two or more analysed sessions to produce side-by-side score bars, signal breakdowns, and overlaid engagement score curves.
 
--
+---
 
 ## Data Collection
 
@@ -149,7 +149,7 @@ Gaze and body data are merged during analysis using `pandas.merge_asof` with a 5
 | `realsense_color.avi` | RealSense | 30 FPS | Annotated RGB video (1280 - 720, XVID) |
 | `session_metadata.json` | GUI | - | Student ID, task name, facilitator, notes, timestamp |
 
--
+---
 
 ## Engagement Model
 
@@ -159,7 +159,7 @@ A student is considered **disengaged** only when all three conditions fail simul
 
 - Gaze is **off-screen**
 - Distance is **outside threshold** (default 0.70 m, adjustable via slider)
-- Student is **not facing forward** (shoulder rotation score - threshold)
+- Student is **not facing forward** (shoulder rotation score >= threshold)
 
 In all other cases the student is considered **engaged**. This conservative rule avoids false disengagement when a student glances at a robot, types on a keyboard, or briefly looks away.
 
@@ -168,7 +168,7 @@ In all other cases the student is considered **engaged**. This conservative rule
 A weighted score is computed per frame and smoothed over a 3-second rolling window:
 
 ```
-score = (gaze_on_screen - 0.50 + facing_forward - 0.30 + distance_ok - 0.20) - 100
+score = (gaze_on_screen * 0.50 + facing_forward * 0.30 + distance_ok * 0.20) * 100
 ```
 
 | Zone | Score | Interpretation |
@@ -186,8 +186,6 @@ Facing-forward status is determined by a three-cue rotation score:
 3. **Height asymmetry** - vertical position difference between shoulders (score +1 if > 3 %)
 
 If the total score reaches the turn threshold (default 2), the student is classified as turned away.
-
--
 
 ## Analysis Pipeline
 
@@ -226,7 +224,7 @@ python analysis/session_exporter.py recordings/both_YYYYMMDD_HHMMSS
 
 Generates `session_report.xlsx` with five sheets: Session Report, Engagement Summary, Gaze Data, Body Data, Disengagement Events.
 
--
+---
 
 ## Dependencies
 
@@ -244,7 +242,7 @@ Generates `session_report.xlsx` with five sheets: Session Report, Engagement Sum
 | `openpyxl` | Excel report generation |
 | `tkinter` | GUI (included with Python standard library) |
 
--
+---
 
 ## Key Design Decisions
 
