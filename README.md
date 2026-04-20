@@ -89,6 +89,8 @@ Select: Tobii -> Tobii Eye Tracker 4C -> Tobii Eye Tracking Core Software
 
 The installer filename is Tobii_Eye_Tracking_Core_v2.16.8.214_x86.exe
 
+This installer includes the Tobii Eye Tracking application, device drivers, and the Stream Engine service. No additional downloads are required.
+
 Note: The Tobii download page states this software is not officially supported on Windows 11. It was successfully tested on Windows 11 Pro Version 23H2 and operates correctly despite this warning.
 
 After installation, plug in the Tobii Eye Tracker 4C and complete the following mandatory steps:
