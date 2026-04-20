@@ -1,54 +1,54 @@
-﻿# ALPER-EU β€” Multimodal Engagement Analysis System
+# ALPER-EU - Multimodal Engagement Analysis System
 
-> **Thesis project** β€” Electronic Engineering MEng  
+> **Thesis project** - Electronic Engineering MEng  
 > Part of the **ALPER EU** (Agile Learning of Programming with Educational Robotics) research project.
 
 A Python desktop application that monitors student attention and behaviour during educational robotics learning sessions. It captures synchronised eye-gaze and body-skeleton data from two sensors, records structured datasets, and computes engagement metrics for post-session analysis.
 
----
+-
 
 ## Hardware Requirements
 
 | Device | Purpose |
-|--------|---------|
+|-|-|
 | **Tobii Eye Tracker 4C** | Gaze coordinates, eye position, attention direction |
 | **Intel RealSense D455** | Depth video, body skeleton tracking, 3D joint coordinates |
 
----
+-
 
 ## System Architecture
 
 ```
 ALPER-EU/
-β”β”€β”€ MainApp.py                        β† Single entry point β€” unified GUI
-β”β”€β”€ Gaze APP Python/
-β”‚   β””β”€β”€ GazeAppAlpha.py               β† Tobii gaze tracking + analysis tab
-β”β”€β”€ RealSenseBodyTracker/
-β”‚   β””β”€β”€ body-tracker.py               β† RealSense body tracking engine
-β”β”€β”€ analysis/
-β”‚   β”β”€β”€ engagement_analysis.py        β† Post-session engagement analysis
-β”‚   β”β”€β”€ multi_session_comparison.py   β† Multi-session comparison plots
-β”‚   β””β”€β”€ session_exporter.py           β† Excel report generator
-β””β”€β”€ recordings/
-    β””β”€β”€ both_YYYYMMDD_HHMMSS/         β† One folder per session
-        β”β”€β”€ tobii_gaze.csv
-        β”β”€β”€ upper_body.csv
-        β”β”€β”€ hands_data.csv
-        β”β”€β”€ realsense_color.avi
-        β”β”€β”€ session_metadata.json
-        β””β”€β”€ analysis/
-            β”β”€β”€ session_summary.json
-            β”β”€β”€ engagement_merged.csv
-            β”β”€β”€ engagement_score.csv
-            β”β”€β”€ disengagement_events.csv
-            β”β”€β”€ engagement_timeline.png
-            β”β”€β”€ gaze_heatmap.png
-            β”β”€β”€ signal_summary.png
-            β”β”€β”€ engagement_score.png
-            β””β”€β”€ session_report.xlsx
+- MainApp.py                        - Single entry point - unified GUI
+- Gaze APP Python/
+-   - GazeAppAlpha.py               - Tobii gaze tracking + analysis tab
+- RealSenseBodyTracker/
+-   - body-tracker.py               - RealSense body tracking engine
+- analysis/
+-   - engagement_analysis.py        - Post-session engagement analysis
+-   - multi_session_comparison.py   - Multi-session comparison plots
+-   - session_exporter.py           - Excel report generator
+- recordings/
+    - both_YYYYMMDD_HHMMSS/         - One folder per session
+        - tobii_gaze.csv
+        - upper_body.csv
+        - hands_data.csv
+        - realsense_color.avi
+        - session_metadata.json
+        - analysis/
+            - session_summary.json
+            - engagement_merged.csv
+            - engagement_score.csv
+            - disengagement_events.csv
+            - engagement_timeline.png
+            - gaze_heatmap.png
+            - signal_summary.png
+            - engagement_score.png
+            - session_report.xlsx
 ```
 
----
+-
 
 ## Installation
 
@@ -98,38 +98,38 @@ python MainApp.py
 
 This opens a single unified window with three tabs.
 
----
+-
 
 ## GUI Tabs
 
-### π¬ Session Control
+### - Session Control
 
 The primary recording interface.
 
-- **Start BOTH** β€” starts eye and body sensors simultaneously. A session metadata dialog appears first (Student ID, Task Name, Facilitator, Notes). Use **Guest / Skip** for demos and tests.
-- **Start Eye Only / Start Body Only** β€” run a single sensor independently.
-- **Countdown** β€” configurable delay (0β€“60 s). Both sensors enter preview mode immediately; recording begins after the countdown so the student is settled.
-- **Live Engagement Monitor** β€” four real-time indicators update every 200 ms:
-  - π‘ Gaze on screen
-  - π“ Within distance
-  - π”„ Facing forward
-  - β± Session time elapsed
-  - π― Overall engagement verdict (disengaged only when all three signals fail simultaneously)
-- **Verification panel** β€” shown after recording stops; confirms row counts, estimated FPS, and video file size for all four output files.
+- **Start BOTH** - starts eye and body sensors simultaneously. A session metadata dialog appears first (Student ID, Task Name, Facilitator, Notes). Use **Guest / Skip** for demos and tests.
+- **Start Eye Only / Start Body Only** - run a single sensor independently.
+- **Countdown** - configurable delay (0-60 s). Both sensors enter preview mode immediately; recording begins after the countdown so the student is settled.
+- **Live Engagement Monitor** - four real-time indicators update every 200 ms:
+  - - Gaze on screen
+  - - Within distance
+  - - Facing forward
+  - - Session time elapsed
+  - - Overall engagement verdict (disengaged only when all three signals fail simultaneously)
+- **Verification panel** - shown after recording stops; confirms row counts, estimated FPS, and video file size for all four output files.
 
-### π‘ Live Tracking
+### - Live Tracking
 
 The Tobii gaze tracking interface. Shows a live gaze dot on a miniature screen canvas, current gaze coordinates, on/off-screen status, cumulative on/off-screen time percentages, and a configurable session timer with optional countdown.
 
 Sampling rate is selectable from 30 to 90 FPS. When running in synchronised mode with the body tracker, the system locks to **30 FPS** to match the RealSense frame rate.
 
-### π“ Data Analysis
+### - Data Analysis
 
 Post-session analysis tools. Select a session folder and click **Run Full Analysis** to generate all outputs. Individual plots can be displayed inline. An Excel report can be downloaded for teachers.
 
 Multi-session comparison: add two or more analysed sessions to produce side-by-side score bars, signal breakdowns, and overlaid engagement score curves.
 
----
+-
 
 ## Data Collection
 
@@ -142,14 +142,14 @@ Gaze and body data are merged during analysis using `pandas.merge_asof` with a 5
 ### Output files per session
 
 | File | Sensor | Rate | Contents |
-|------|--------|------|----------|
+|-|-|-|-|
 | `tobii_gaze.csv` | Tobii 4C | 30 FPS (sync) / up to 90 FPS (standalone) | `epoch_ms`, `x`, `y`, `on_screen` |
 | `upper_body.csv` | RealSense | 30 FPS | `epoch_ms`, `device_ms`, Nose X/Y/dist, L/R Shoulder X/Y/dist, `Distance_OK`, `Facing_Forward`, `Body_Engaged` |
 | `hands_data.csv` | RealSense | 30 FPS | `epoch_ms`, `device_ms`, `Fingers_Detected`, `Hand_Count` |
-| `realsense_color.avi` | RealSense | 30 FPS | Annotated RGB video (1280 Γ— 720, XVID) |
-| `session_metadata.json` | GUI | β€” | Student ID, task name, facilitator, notes, timestamp |
+| `realsense_color.avi` | RealSense | 30 FPS | Annotated RGB video (1280 - 720, XVID) |
+| `session_metadata.json` | GUI | - | Student ID, task name, facilitator, notes, timestamp |
 
----
+-
 
 ## Engagement Model
 
@@ -159,35 +159,35 @@ A student is considered **disengaged** only when all three conditions fail simul
 
 - Gaze is **off-screen**
 - Distance is **outside threshold** (default 0.70 m, adjustable via slider)
-- Student is **not facing forward** (shoulder rotation score β‰¥ threshold)
+- Student is **not facing forward** (shoulder rotation score - threshold)
 
 In all other cases the student is considered **engaged**. This conservative rule avoids false disengagement when a student glances at a robot, types on a keyboard, or briefly looks away.
 
-### Engagement score (0β€“100)
+### Engagement score (0-100)
 
 A weighted score is computed per frame and smoothed over a 3-second rolling window:
 
 ```
-score = (gaze_on_screen Γ— 0.50 + facing_forward Γ— 0.30 + distance_ok Γ— 0.20) Γ— 100
+score = (gaze_on_screen - 0.50 + facing_forward - 0.30 + distance_ok - 0.20) - 100
 ```
 
 | Zone | Score | Interpretation |
-|------|-------|----------------|
-| High | β‰¥ 80 | Strongly engaged |
-| Moderate | 50β€“79 | Partially engaged |
+|-|-|-|
+| High | - 80 | Strongly engaged |
+| Moderate | 50-79 | Partially engaged |
 | Low | < 50 | At risk of disengagement |
 
 ### Body orientation detection
 
 Facing-forward status is determined by a three-cue rotation score:
 
-1. **Shoulder width ratio** β€” current width vs calibrated baseline (score +1 if < 75 %)
-2. **Depth asymmetry** β€” difference in depth between left and right shoulder (score +1 if > 10 cm)
-3. **Height asymmetry** β€” vertical position difference between shoulders (score +1 if > 3 %)
+1. **Shoulder width ratio** - current width vs calibrated baseline (score +1 if < 75 %)
+2. **Depth asymmetry** - difference in depth between left and right shoulder (score +1 if > 10 cm)
+3. **Height asymmetry** - vertical position difference between shoulders (score +1 if > 3 %)
 
 If the total score reaches the turn threshold (default 2), the student is classified as turned away.
 
----
+-
 
 ## Analysis Pipeline
 
@@ -200,20 +200,20 @@ python analysis/engagement_analysis.py recordings/both_YYYYMMDD_HHMMSS
 Outputs saved to `recordings/both_YYYYMMDD_HHMMSS/analysis/`:
 
 | Output | Description |
-|--------|-------------|
+|-|-|
 | `session_summary.json` | All metrics in machine-readable format |
 | `engagement_merged.csv` | Per-frame merged gaze + body data with engagement verdict |
 | `engagement_score.csv` | Per-second score, smoothed score, and individual signal means |
 | `disengagement_events.csv` | Each disengagement episode with start, end, and duration |
 | `engagement_timeline.png` | Four-row colour band timeline (gaze / distance / facing / verdict) |
-| `gaze_heatmap.png` | Gaussian-smoothed gaze density map on a 1920 Γ— 1200 canvas |
+| `gaze_heatmap.png` | Gaussian-smoothed gaze density map on a 1920 - 1200 canvas |
 | `signal_summary.png` | Bar chart of % time each condition was true |
 | `engagement_score.png` | Smoothed score over time with zone shading and signal traces |
 
 ### Multi-session comparison
 
 ```bash
-python analysis/multi_session_comparison.py recordings/both_* --output recordings/comparison
+python analysis/multi_session_comparison.py recordings/both_* -output recordings/comparison
 ```
 
 Produces `comparison_scores.png`, `comparison_signals.png`, `comparison_curves.png`, and `comparison_table.csv` in the output directory.
@@ -226,12 +226,12 @@ python analysis/session_exporter.py recordings/both_YYYYMMDD_HHMMSS
 
 Generates `session_report.xlsx` with five sheets: Session Report, Engagement Summary, Gaze Data, Body Data, Disengagement Events.
 
----
+-
 
 ## Dependencies
 
 | Package | Purpose |
-|---------|---------|
+|-|-|
 | `pyzmq` | ZeroMQ socket for Tobii stream |
 | `pyrealsense2` | Intel RealSense SDK Python wrapper |
 | `mediapipe` | Body pose and hand landmark detection |
@@ -244,7 +244,7 @@ Generates `session_report.xlsx` with five sheets: Session Report, Engagement Sum
 | `openpyxl` | Excel report generation |
 | `tkinter` | GUI (included with Python standard library) |
 
----
+-
 
 ## Key Design Decisions
 
@@ -252,6 +252,6 @@ Generates `session_report.xlsx` with five sheets: Session Report, Engagement Sum
 
 **Why MediaPipe Complexity 0?** The lightest pose model (`model_complexity=0`) is used to keep body tracking within the 33 ms frame budget at 30 FPS. Shoulder and nose visibility is sufficient for the distance and orientation signals needed by the engagement model.
 
-**Why XVID for video?** XVID (AVI container) is widely supported on Windows without additional codec installation, produces manageable file sizes at 30 FPS / 1280 Γ— 720, and does not require FFmpeg.
+**Why XVID for video?** XVID (AVI container) is widely supported on Windows without additional codec installation, produces manageable file sizes at 30 FPS / 1280 - 720, and does not require FFmpeg.
 
 **Why conservative disengagement rule?** Educational robotics tasks naturally cause students to look away from the screen (at the robot, at a worksheet, at a peer). Triggering disengagement on a single off-screen gaze would produce many false positives. The all-three-false rule produces a meaningful signal that correlates with genuine task abandonment.
