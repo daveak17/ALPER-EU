@@ -58,21 +58,30 @@ Python 3.11.9 is required. Download from https://www.python.org/downloads/releas
 
 During installation, check **Add Python 3.11 to PATH** before clicking Install Now.
 
+Note: If the machine already has other Python versions installed, use the Windows Python Launcher
+(py) to invoke Python 3.11 explicitly throughout these steps. Verify with:
+
+    py -3.11 --version
+
 ### 2. PowerShell execution policy (Windows)
 
 Run once in PowerShell before any other steps:
 
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-### 3. Python dependencies
+### 3. Clone the repository
 
-    pip install -r requirements.txt
+    git clone https://github.com/daveak17/ALPER-EU.git
+    cd ALPER-EU
 
-All required packages are listed in requirements.txt with exact version numbers used during development and testing.
+### 4. Python dependencies
+
+    py -3.11 -m pip install -r requirements.txt
 
 Note: pyrealsense2 bundles the full RealSense runtime. No separate Intel RealSense SDK installation is required.
+Note: numpy and opencv are resolved automatically by mediapipe. Do not pin them separately.
 
-### 4. Tobii Eye Tracking Core Software
+### 5. Tobii Eye Tracking Core Software
 
 Download version 2.16.8 from https://gaming.tobii.com/getstarted/
 
@@ -82,19 +91,28 @@ The installer filename is Tobii_Eye_Tracking_Core_v2.16.8.214_x86.exe
 
 Note: The Tobii download page states this software is not officially supported on Windows 11. It was successfully tested on Windows 11 Pro Version 23H2 and operates correctly despite this warning.
 
-### 5. TobiiStream
+After installation, plug in the Tobii Eye Tracker 4C and complete the following mandatory steps:
+1. Open the Tobii Eye Tracking application from the Windows system tray
+2. Create a user profile
+3. Complete the eye tracking calibration
+
+TobiiStream will not produce valid gaze data until a calibrated user profile exists.
+
+### 6. TobiiStream
 
 TobiiStream is included in this repository at Required/TobiiStream/TobiiStream/. No installation is required. Before launching the application, double-click TobiiStream.exe to start the gaze data bridge. Keep the console window open during recording sessions.
 
-### 6. Run the application
+### 7. Run the application
 
-    python MainApp.py
+    py -3.11 MainApp.py
+
+If Python 3.11 is the only version installed, python MainApp.py will also work.
 
 ## Running the Application
 
-```bash
-python MainApp.py
-```
+    py -3.11 MainApp.py
+
+If Python 3.11 is the only version installed, python MainApp.py will also work.
 
 This opens a single unified window with three tabs.
 
