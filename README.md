@@ -173,7 +173,7 @@ score = (gaze_on_screen - 0.50 + facing_forward - 0.30 + distance_ok - 0.20) - 1
 
 | Zone | Score | Interpretation |
 |-|-|-|
-| High | - 80 | Strongly engaged |
+| High | >= 80 | Strongly engaged |
 | Moderate | 50-79 | Partially engaged |
 | Low | < 50 | At risk of disengagement |
 
