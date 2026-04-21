@@ -69,19 +69,27 @@ Run once in PowerShell before any other steps:
 
     Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
-### 3. Clone the repository
+### 3. Install Git
+
+Download and install Git from https://git-scm.com/download/win
+
+Run the installer with default options. After installation, close and reopen PowerShell, then verify:
+
+    git --version
+
+### 4. Clone the repository
 
     git clone https://github.com/daveak17/ALPER-EU.git
     cd ALPER-EU
 
-### 4. Python dependencies
+### 5. Python dependencies
 
     py -3.11 -m pip install -r requirements.txt
 
 Note: pyrealsense2 bundles the full RealSense runtime. No separate Intel RealSense SDK installation is required.
 Note: numpy and opencv are resolved automatically by mediapipe. Do not pin them separately.
 
-### 5. Tobii Eye Tracking Core Software
+### 6. Tobii Eye Tracking Core Software
 
 Download version 2.16.8 from https://gaming.tobii.com/getstarted/
 
@@ -100,11 +108,11 @@ After installation, plug in the Tobii Eye Tracker 4C and complete the following 
 
 TobiiStream will not produce valid gaze data until a calibrated user profile exists.
 
-### 6. TobiiStream
+### 7. TobiiStream
 
 TobiiStream is included in this repository at Required/TobiiStream/TobiiStream/. No installation is required. Before launching the application, double-click TobiiStream.exe to start the gaze data bridge. Keep the console window open during recording sessions.
 
-### 7. Run the application
+### 8. Run the application
 
     py -3.11 MainApp.py
 
