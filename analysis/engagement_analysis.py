@@ -328,7 +328,11 @@ def plot_engagement_timeline(merged: pd.DataFrame, out_path: str):
 # Plot 2 — Gaze heatmap
 # ---------------------------------------------------------------------------
 def plot_gaze_heatmap(merged: pd.DataFrame, out_path: str):
-    """Gaussian-smoothed gaze density heatmap on a 1920x1200 canvas."""
+    """Gaze density heatmap using 2D histogram with log scaling."""
+    from matplotlib.colors import LogNorm
+    import matplotlib.style as mplstyle
+    mplstyle.use('seaborn-v0_8')
+
     # Only on-screen gaze points
     on = merged[merged['on_screen'] & (merged['x'] > 0) & (merged['y'] > 0)]
 
@@ -336,40 +340,36 @@ def plot_gaze_heatmap(merged: pd.DataFrame, out_path: str):
         print("[WARN] Not enough on-screen gaze points for heatmap")
         return
 
-    # Build density grid
-    heatmap = np.zeros((SCREEN_H, SCREEN_W), dtype=np.float32)
-    xs = np.clip(on['x'].values.astype(int), 0, SCREEN_W - 1)
-    ys = np.clip(on['y'].values.astype(int), 0, SCREEN_H - 1)
-    for x, y in zip(xs, ys):
-        heatmap[y, x] += 1
-
-    heatmap = gaussian_filter(heatmap, sigma=HEATMAP_SIGMA)
-    heatmap /= heatmap.max() if heatmap.max() > 0 else 1
+    x_data = np.clip(on['x'].values, 0, SCREEN_W)
+    y_data = np.clip(on['y'].values, 0, SCREEN_H)
 
     fig, ax = plt.subplots(figsize=(12, 7.5))
-    ax.set_facecolor('black')
-    fig.patch.set_facecolor('black')
 
-    im = ax.imshow(heatmap, cmap='jet', aspect='auto',
-                   origin='upper', extent=[0, SCREEN_W, SCREEN_H, 0],
-                   alpha=0.85, vmin=0, vmax=1)
+    heatmap_data, xedges, yedges = np.histogram2d(
+        x_data, y_data, bins=50,
+        range=[[0, SCREEN_W], [0, SCREEN_H]])
 
-    cbar = fig.colorbar(im, ax=ax, fraction=0.02, pad=0.02)
-    cbar.set_label('Gaze Density', color='white', fontsize=10)
-    cbar.ax.yaxis.set_tick_params(color='white')
-    plt.setp(cbar.ax.yaxis.get_ticklabels(), color='white')
+    smoothed = gaussian_filter(heatmap_data, sigma=2.0)
 
+    min_positive = (smoothed[smoothed > 0].min()
+                    if np.any(smoothed > 0) else 1e-3)
+    norm = LogNorm(vmin=max(min_positive, 1e-3), vmax=smoothed.max())
+
+    im = ax.imshow(smoothed.T, origin='lower', cmap='turbo',
+                   extent=[0, SCREEN_W, 0, SCREEN_H], aspect='auto',
+                   norm=norm)
+
+    fig.colorbar(im, ax=ax, label='Gaze Density')
     ax.set_title(f'Gaze Heatmap  ({len(on)} on-screen samples)',
-                 color='white', fontsize=13, fontweight='bold')
-    ax.set_xlabel('Screen X (px)', color='white')
-    ax.set_ylabel('Screen Y (px)', color='white')
-    ax.tick_params(colors='white')
-    for spine in ax.spines.values():
-        spine.set_edgecolor('white')
+                 fontsize=13, fontweight='bold', pad=15)
+    ax.set_xlabel('Screen X (px)')
+    ax.set_ylabel('Screen Y (px)')
+    ax.set_xlim(0, SCREEN_W)
+    ax.set_ylim(SCREEN_H, 0)
+    ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches='tight',
-                facecolor='black', edgecolor='none')
+    fig.savefig(out_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"[PLOT] Heatmap saved: {out_path}")
 
