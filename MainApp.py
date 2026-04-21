@@ -273,6 +273,9 @@ class MainController:
             analysis_frame=self.analysis_tab,
         )
 
+        # Check sensor readiness 1.5 seconds after startup
+        self.root.after(1500, self._check_sensor_readiness)
+
     def _build_session_tab(self):
         outer = ttk.Frame(self.session_tab, padding=16)
         outer.pack(fill='both', expand=True)
@@ -430,6 +433,59 @@ class MainController:
         outer.columnconfigure(0, weight=1)
 
         # Engagement polling is started/stopped with recording (see _start/stop_engagement_poll)
+
+    # -----------------------------------------------------------------------
+    # Startup sensor readiness check
+    # -----------------------------------------------------------------------
+    def _check_sensor_readiness(self):
+        """Run once at startup in a background thread to detect connected sensors."""
+        import threading
+
+        def check():
+            # Check RealSense
+            try:
+                import pyrealsense2 as rs
+                ctx = rs.context()
+                devices = ctx.query_devices()
+                realsense_ok = len(devices) > 0
+            except Exception:
+                realsense_ok = False
+
+            # Check TobiiStream (ZMQ socket)
+            try:
+                import zmq
+                ctx_zmq = zmq.Context()
+                sock = ctx_zmq.socket(zmq.SUB)
+                sock.setsockopt_string(zmq.SUBSCRIBE, "TobiiStream")
+                sock.connect("tcp://127.0.0.1:5556")
+                sock.setsockopt(zmq.RCVTIMEO, 400)
+                try:
+                    sock.recv_string()
+                    tobii_ok = True
+                except zmq.Again:
+                    tobii_ok = False
+                finally:
+                    sock.close()
+                    ctx_zmq.term()
+            except Exception:
+                tobii_ok = False
+
+            # Update GUI on main thread
+            self.root.after(0, lambda: self._apply_sensor_status(realsense_ok, tobii_ok))
+
+        threading.Thread(target=check, daemon=True).start()
+
+    def _apply_sensor_status(self, realsense_ok: bool, tobii_ok: bool):
+        """Update sensor status labels after startup check."""
+        if realsense_ok:
+            self.body_status.config(text="Connected ", foreground="#27ae60")
+        else:
+            self.body_status.config(text="Not detected", foreground="#e67e22")
+
+        if tobii_ok:
+            self.eye_status.config(text="Connected ", foreground="#27ae60")
+        else:
+            self.eye_status.config(text="Not detected", foreground="#e67e22")
 
     # -----------------------------------------------------------------------
     # Button state management
