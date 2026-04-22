@@ -394,16 +394,17 @@ class BodyTrackerEngine:
                         self.live_state["body_engaged"]   = body_engaged
 
                         # Body engagement label on preview window
+                        # Body engagement label on preview window
                         if body_engaged:
                             cv2.putText(image_bgr, "BODY: ENGAGED", (50, 140),
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                         else:
-                            reasons = []
-                            if not distance_ok:
-                                reasons.append("DISTANCE")
-                            if not facing_forward:
-                                reasons.append("TURN")
-                            label = "BODY: UNFOCUSED (" + " & ".join(reasons) + ")"
+                            if not distance_ok and not facing_forward:
+                                label = "BODY: UNFOCUSED"
+                            elif not distance_ok:
+                                label = "BODY: TOO FAR"
+                            else:
+                                label = "BODY: TURNED"
                             cv2.putText(image_bgr, label, (50, 150),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 3)
 
