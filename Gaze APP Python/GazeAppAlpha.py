@@ -544,10 +544,10 @@ class GazeAnalysisApp:
         self.results_frame.pack(fill='both', expand=True, padx=20, pady=10)
 
         welcome_text = (
-            "\n    Eye Tracking Analysis Dashboard!\n\n"
+            "\n    Multimodal Engagement Analysis Dashboard\n\n"
             "    To begin:\n"
             "    1. Click \"Load CSV File\"\n"
-            "    2. Choose a gaze CSV\n"
+            "    2. Choose a CSV\n"
             "    3. View analysis results here\n"
         )
         ttk.Label(self.results_frame, text=welcome_text,

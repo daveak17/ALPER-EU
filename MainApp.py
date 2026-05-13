@@ -568,7 +568,8 @@ class MainController:
         def go():
             gaze_csv = os.path.join(folder, 'tobii_gaze.csv')
             try:
-                self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=30)
+                selected_fps = int(self.gaze_app.fps_combo.get())
+                self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=selected_fps)
                 self.gaze_app.reset_gaze_timers()
                 self.eye_status.config(text='Recording ●')
             except Exception as e:
@@ -630,7 +631,8 @@ class MainController:
         def go():
             gaze_csv = os.path.join(folder, 'tobii_gaze.csv')
             try:
-                self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=30)
+                selected_fps = int(self.gaze_app.fps_combo.get())
+                self.gaze_app.start_recording(gaze_csv, go_epoch_ms, target_fps=selected_fps)
                 self.gaze_app.reset_gaze_timers()
                 self.eye_status.config(text='Recording ●')
                 self.unified_status.config(text='Recording ● Eye only')
